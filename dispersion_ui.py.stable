@@ -1,0 +1,94 @@
+from matplotlib import pyplot as plt
+import numpy as np
+import sys,os
+
+
+
+
+dispersion_3_max = 5.0
+dispersion_2_max = 5.0
+
+
+dispersion_3_min = -dispersion_3_max
+dispersion_3_multiplier = 1e-16
+dispersion_2_min = -dispersion_2_max
+dispersion_2_multiplier = 1e-10
+
+c3min = dispersion_3_min*dispersion_3_multiplier
+c3max = dispersion_3_max*dispersion_3_multiplier
+c2min = dispersion_2_min*dispersion_2_multiplier
+c2max = dispersion_2_max*dispersion_2_multiplier
+
+def max(im):
+    return np.median(np.max(im,axis=0))
+    #return np.max(im)
+
+def dispersion_ui(raw_data,func,c3min=c3min,c3max=c3max,c2min=c2min,c2max=c2max):
+
+    markersize = 8.0
+    
+    global points,imaxes,imins
+    points = []
+    imaxes=[]
+    imins=[]
+    
+    fig = plt.figure()
+
+    def onclick(event):
+        print event.button
+        if event.inaxes is None:
+            printclicks()
+            return
+        
+        global points,imaxes,imins
+        xnewclick = event.xdata
+        ynewclick = event.ydata
+        
+        if xnewclick<c2min or xnewclick>c2max or ynewclick<c3min or ynewclick>c3max:
+            print 'Clearing.'
+            points = []
+            imaxes = []
+            imins = []
+            return
+        
+        points.append((xnewclick,ynewclick))
+
+        im = np.log(np.abs(func(raw_data,ynewclick,xnewclick)))[:950,:]
+        med = np.median(im)
+        std = np.std(im)
+        clim = (med+.5*std,med+2.5*std)
+
+        imax = max(im)
+        imaxes.append(imax)
+
+        peak_max = np.max(imaxes)
+        peak_min = np.min(imaxes)
+
+        plt.subplot(1,2,1)
+        plt.cla()
+        plt.imshow(im,aspect='auto',clim=clim,cmap='gray')
+        
+        
+        plt.subplot(1,2,2)
+        #plt.sca(event.inaxes)
+        plt.cla()
+        for p,imax in zip(points,imaxes):
+            if imax==peak_max:
+                plt.plot(p[0],p[1],'ro',markersize=markersize)
+            else:
+                peak_rel = (imax-peak_min)/(peak_max-peak_min)
+                b = 1.0-(np.clip(peak_rel,0,.8))
+                plt.plot(p[0],p[1],'go',markersize=markersize,color=(b,b,b),alpha=0.75)
+            
+        plt.xlim([c2min,c2max])
+        plt.ylim([c3min,c3max])
+        plt.draw()
+
+    cid = fig.canvas.mpl_connect('button_press_event',onclick)
+
+    plt.subplot(1,2,2)
+    plt.xlim([c2min,c2max])
+    plt.ylim([c3min,c3max])
+    plt.show()
+    return points,imaxes
+
