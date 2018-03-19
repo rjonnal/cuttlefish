@@ -2,7 +2,6 @@ from config_reader import get_configuration
 import sys,os,time
 import numpy as np
 
-
 def get_configuration_parameters(xml_filename):
     # get a dictionary of configuration parameters (pixels per
     # a-scan, a-scans per b-scan, b-scans per volume, etc.)

@@ -3,6 +3,25 @@ from datetime import datetime
 import logging
 from xml.etree import ElementTree as ET
 
+
+XML_DICT = {}
+# populate XML_DICT with required parameters from Yifan's XML grammar
+# keys of this dictionary [x,y] are x = element tag and y = element attribute
+# the values of this dictionary (x,y) are x = our new name for the data and
+# y = the data type (i.e. a function that we can cast the output with)
+XML_DICT['Time','Data_Acquired_at'] = ('time_stamp',str)
+XML_DICT['Volume_Size','Width'] = ('n_depth',int)
+XML_DICT['Volume_Size','Height'] = ('n_fast',int)
+XML_DICT['Volume_Size','Number_of_Frames'] = ('n_slow',int)
+XML_DICT['Volume_Size','Number_of_Volumes'] = ('n_vol',int)
+XML_DICT['Scanning_Parameters','X_Scan_Range'] = ('x_scan_mv',int)
+XML_DICT['Scanning_Parameters','X_Scan_Offset'] = ('x_offset_mv',int)
+XML_DICT['Scanning_Parameters','Y_Scan_Range'] = ('y_scan_mv',int)
+XML_DICT['Scanning_Parameters','Y_Scan_Offset'] = ('y_offset_mv',int)
+XML_DICT['Scanning_Parameters','Number_of_BM_scans'] = ('n_bm_scans',int)
+
+
+
 def get_configuration(filename):
 
     ''' Pull configuration parameters from Yifan's
@@ -52,22 +71,6 @@ def get_configuration(filename):
         filename = filename + '.xml'
 
     
-    xml_dict = {}
-    # populate xml_dict with required parameters from Yifan's XML grammar
-    # keys of this dictionary [x,y] are x = element tag and y = element attribute
-    # the values of this dictionary (x,y) are x = our new name for the data and
-    # y = the data type (i.e. a function that we can cast the output with)
-    xml_dict['Time','Data_Acquired_at'] = ('time_stamp',str)
-    xml_dict['Volume_Size','Width'] = ('n_depth',int)
-    xml_dict['Volume_Size','Height'] = ('n_fast',int)
-    xml_dict['Volume_Size','Number_of_Frames'] = ('n_slow',int)
-    xml_dict['Volume_Size','Number_of_Volumes'] = ('n_vol',int)
-    xml_dict['Scanning_Parameters','X_Scan_Range'] = ('x_scan_mv',int)
-    xml_dict['Scanning_Parameters','X_Scan_Offset'] = ('x_offset_mv',int)
-    xml_dict['Scanning_Parameters','Y_Scan_Range'] = ('y_scan_mv',int)
-    xml_dict['Scanning_Parameters','Y_Scan_Offset'] = ('y_offset_mv',int)
-    xml_dict['Scanning_Parameters','Number_of_BM_scans'] = ('n_bm_scans',int)
-
     # use Python's ElementTree to get a navigable XML tree
     temp = ET.parse(filename).getroot()
 
@@ -77,18 +80,26 @@ def get_configuration(filename):
     # make an empty output dictionary
     config_dict = {}
 
-    # iterate through keys of specification (xml_dict)
+    # iterate through keys of specification (XML_DICT)
     # and find corresponding settings in the XML tree.
     # as they are found, insert them into config_dict with
     # some sensible but compact names, casting them as
     # necessary:
-    for xml_key in xml_dict.keys():
+    for xml_key in XML_DICT.keys():
         node = tree.find(xml_key[0])
         config_value = node.attrib[xml_key[1]]
-        xml_value = xml_dict[xml_key]
+        xml_value = XML_DICT[xml_key]
         config_key = xml_value[0]
         config_cast = xml_value[1]
         config_dict[config_key] = config_cast(config_value)
         
     return config_dict
     
+def make_configuration():
+
+    config = {}
+    for xml_value in XML_DICT.values():
+        config_key = xml_value[0]
+        config[config_key] = None
+
+    return config
