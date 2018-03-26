@@ -11,7 +11,7 @@ def logscale(frame,lower_limit=None,upper_limit=None,bit_depth=16):
     if upper_limit is None:
         upper_limit = np.median(frame)+3.7*np.std(frame)
     
-    return np.round(((frame - lower_limit)/(upper_limit-lower_limit)*2**bit_depth)).clip(0,2**bit_depth)
+    return np.round(((frame - lower_limit)/(upper_limit-lower_limit)*2**bit_depth)).clip(0,2**bit_depth-1)
 
 def linearscale(frame,lower_limit=None,upper_limit=None,bit_depth=16):
     '''A convenience function for scaling OCT b-scans
