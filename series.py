@@ -11,7 +11,7 @@ from scipy.optimize import curve_fit
 from scipy.io import savemat
 import matplotlib.colors as colors
 import matplotlib.cm as cmx
-
+from fig2gif import GIF
 
 
 class Cone:
@@ -141,21 +141,46 @@ class Cone:
         print 'bye'
         return aa,bb
         
+
+
+class Database:
+
+    def __init__(self,filename,sep='\t'):
+        self.filename = filename
+        self.sep = sep
+        self.dictionary = {}
+        try:
+            fid = open(self.filename,'r')
+            for line in fid:
+                key,val = self.parse(line)
+                self.dictionary[key] = val
+        except IOError:
+            pass
+
+    def keys(self):
+        return self.dictionary.keys()
+    
+    def parse(self,file_line):
+        contents = file_line.split(self.sep)
+        return contents[0],[contents[1],int(contents[2])]
         
-
-
+    def put(self,key,target_filename,volume_index):
+        fid = open(self.filename,'a')
+        outstring = '%s\t%s\t%d\n'%(key,target_filename,volume_index)
+        fid.write(outstring)
+        fid.close()
+        self.dictionary[key] = [target_filename,volume_index]
+        
+    def get(self,key):
+        return self.dictionary[key]
+        
 class Series:
 
-    def __init__(self,series_filename,reference_frame=None,working_directory=None):
-        self.hive = Hive(series_filename)
-        self.tag = os.path.splitext(series_filename)[0]
+    def __init__(self,series_directory,reference_frame=None):
+        self.hive = Hive(series_directory)
         self.n_frames = 0
-        self.tag_template = '%s/%06d'
-        self.series_filename = series_filename
-        if working_directory is None:
-            self.working_directory = os.path.split(series_filename)[0]
-        else:
-            self.working_directory = working_directory
+        self.series_directory = series_directory
+        self.db = Database(os.path.join(self.series_directory,'target_db.txt'))
             
         if not reference_frame is None:
             self.reference = reference_frame
@@ -614,549 +639,99 @@ class Series:
         return av
 
 
-    def make_big_sheet(self,phase=False,sort_by_nvol=True):
-        volume_dictionary = self.get_volume_dictionary()
+    def make_key(self,filename,volume_idx,layer_names):
+        return '%s_%06d_%s'%(filename.replace(os.sep,'_'),volume_idx,'_'.join(layer_names))
         
-        n_volumes = self.get_n_volumes()
-        slow_max,fast_max,depth_max = self.get_cone_volume_size()
-        n_cones = self.get_n_cones()
-        border = 1
-
-        sy = (border+depth_max)*n_cones
-        sx = (border+fast_max)*n_volumes
-        dpi = 100.0
-
-        fx = sx/dpi
-        fy = sy/dpi
-            
-        cone_catalog = self.hive['cone_catalog']
-        cone_keys = cone_catalog.keys()
-
-        clim_dict = {}
-        nvol_list = []
-        
-        for cone_index,ck in enumerate(cone_keys):
-            print cone_index
-            if ck in ['slow_max','fast_max','depth_max','n_cones']:
-                continue
-            frame_keys = cone_catalog['%s'%ck].keys()
-
-            cmax = -np.inf
-            cmin = np.inf
-            n_valid_vols = 0
-            
-            for fk in frame_keys:
-                index_keys = cone_catalog['%s/%s'%(ck,fk)].keys()
-                for ik in index_keys:
-                    vol = cone_catalog['%s/%s/%s/cone_volume'%(ck,fk,ik)][:,:,:]
-                    if np.max(vol.shape)>20:
-                        continue
-                    if not np.prod(vol.shape):
-                        continue
-                    if phase:
-                        vol = np.angle(vol)
-                    else:
-                        vol = np.abs(vol)
-
-                    vol = utils.smooth_cone_volume(vol)
-                    n_valid_vols = n_valid_vols+1
-                    proj = vol.mean(axis=0).T
-                    if proj.max()>cmax:
-                        cmax = proj.max()
-                    if proj.min()<cmin:
-                        cmin = proj.min()
-
-            clim_dict[ck] = (cmin,cmax)
-            nvol_list.append(n_valid_vols)
-
-        if sort_by_nvol:
-            new_cone_keys = []
-            order = np.argsort(nvol_list)[::-1]
-            for idx in order:
-                new_cone_keys.append(cone_keys[idx])
-            cone_keys = new_cone_keys
-            
-            
-        sheet = np.zeros((sy,sx),dtype=np.uint8)
-        for cone_index,ck in enumerate(cone_keys):
-            print cone_index
-            if ck in ['slow_max','fast_max','depth_max','n_cones']:
-                continue
-            frame_keys = cone_catalog['%s'%ck].keys()
-            for fk in frame_keys:
-                index_keys = cone_catalog['%s/%s'%(ck,fk)].keys()
-                for ik in index_keys:
-                    vol = cone_catalog['%s/%s/%s/cone_volume'%(ck,fk,ik)][:,:,:]
-                    if np.max(vol.shape)>20:
-                        continue
-                    if not np.prod(vol.shape):
-                        continue
-                    if phase:
-                        vol = np.angle(vol)
-                    else:
-                        vol = np.abs(vol)
-                    vol = utils.smooth_cone_volume(vol)
-                    proj = vol.mean(axis=0).T
-                    proj = utils.bmpscale(proj,clim_dict[ck])
-                    py,px = proj.shape
-                    volume_index = volume_dictionary[(fk,ik)]
-                    x1 = volume_index*(fast_max+border)
-                    x2 = x1+px
-                    y1 = cone_index*(depth_max+border)
-                    y2 = y1+py
-                    sheet[y1:y2,x1:x2] = proj
-
-        plt.figure(figsize=(fx,fy))
-        plt.axes([0,0,1,1])
-        plt.imshow(sheet,cmap='gray',interpolation='none')
-        plt.xticks([])
-        plt.yticks([])
-        if phase:
-            outfn = '%s_cone_catalog_sheet_phase.png'%self.tag
-        else:
-            outfn = '%s_cone_catalog_sheet_amplitude.png'%self.tag
-            
-        plt.savefig(outfn,dpi=dpi)
-        plt.show()
-
-                            
-                
-    def get_subvol(self,vol,x,y,z,xrad=0,yrad=0,zrad=0):
-        # return a subvol, trimming as necessary
-        sx,sy,sz = vol.shape
-        x1 = x-xrad
-        x2 = x+xrad+1
-        y1 = y-yrad
-        y2 = y+yrad+1
-        z1 = z-zrad
-        z2 = z+zrad+1
-        x1 = max(0,x1)
-        x2 = min(sx,x2)
-        y1 = max(0,y1)
-        y2 = min(sy,y2)
-        z1 = max(0,z1)
-        z2 = min(sz,z2)
-        return vol[int(x1):int(x2),int(y1):int(y2),int(z1):int(z2)]
-
-    def find_corresponding_data(self,points):
-        ref = self.hive['/reference_frame'][:,:]
-        #xclicks,yclicks,junk = collector([ref])
-        #print xclicks
-        #print yclicks
-
-        fkeys = self.hive['/frames'].keys()
-        for fk in fkeys:
-            ikeys = self.hive['/frames'][fk].keys()
-            for ik in ikeys:
-                vol = dataset_h5
-                print fk,ik
-            sys.exit()
-
-        
-    def get_cropper(self,im):
-        # return a cropper function that
-        # will crop images according to im's
-        # empty (uninformative) borders
-        vprof = np.std(im,axis=1)
-        valid_region_y = np.where(vprof)[0]
-        hprof = np.std(im,axis=0)
-        valid_region_x = np.where(hprof)[0]
-        y1 = valid_region_y[0]
-        y2 = valid_region_y[-1]
-        x1 = valid_region_x[0]
-        x2 = valid_region_x[-1]
-        return lambda x: x[y1:y2,x1:x2]
-        
-
-    def crop_and_label_average_volume(self,tag='ISOS',labels=['ELM','ISOS','COST','RPE']):
-        """Find the average volume tagged TAG and interactively
-        crop it in 3D and label it"""
-
-        av = self.hive['/average_volume/%s'%tag][:,:,:]
-        zproj = av.mean(axis=1)
-        xc,yc,_=collector([zproj])
-        rect = np.array(xc+yc)
-        rect = np.round(rect).astype(int)
-        self.hive.put('average_volume/%s_xy_rect'%tag,rect)
-        x1 = rect[0]
-        x2 = rect[1]
-        y1 = rect[2]
-        y2 = rect[3]
-        
-        yproj = np.log(av.mean(axis=0)+1000.0)
-        xc,yc,_=collector([yproj])
-        zlim = np.round(yc).astype(int)
-        self.hive.put('average_volume/%s_zlims'%tag,zlim)
-        z1 = zlim[0]
-        z2 = zlim[1]
-            
-        av = av[y1:y2,z1:z2,x1:x2]
-        sy,sz,sx = av.shape
-        
-        bscan = av[sy//2,:,:]
-        profile = np.mean(bscan,axis=1)
-        lprofile = np.log(profile+1000.0)
-        z = np.arange(bscan.shape[0])
-        self.hive.put('average_volume/%s_profile'%tag,profile)
-        for label in ['ELM','ISOS','ISOS_distal','COST_proximal','COST','RPE','OPL','CH']:
-            #xc,zc,_=collector([bscan],titles=['Click upper and lower extents of %s.'%label])
-            zc,xc,_=collector([(z,lprofile)],titles=['Click left and right extents of %s.'%label])
-            if len(zc)<2:
-                sys.exit('Must select two points.')
-            zc = np.round(np.array(zc))
-            zc = np.array([zc.min(),zc.max()]).astype(int)
-            self.hive.put('average_volume/%s_labels/%s'%(tag,label),zc)
-
-    def average_is_cropped_and_labeled(self,tag):
-        labeled = True
-        try:
-            x = self.hive['/average_volume/%s_labels'%tag]
-        except Exception as e:
-            labeled = False
-        return labeled
-            
-    def get_average_volume_labels(self,tag):
-        labels = {}
-        for k in self.hive['average_volume/%s_labels'%tag].keys():
-            labels[k] = self.hive['average_volume/%s_labels/%s'%(tag,k)]
-        return labels
     
-    def get_average_volume(self,tag):
-        av = self.hive['/average_volume/%s'%tag][:,:,:]
-        x1,x2,y1,y2 = self.hive['average_volume/ISOS_xy_rect'][:]
-        z1,z2 = self.hive['average_volume/ISOS_zlims'][:]
-        return av[y1:y2,z1:z2,x1:x2]
+    def map_into_reference_space(self,filename,vidx,layer_names,goodness_threshold=-np.inf,oversampling_factor=1.0,oversampling_method='nearest'):
+        k = self.make_key(filename,vidx,layer_names)
+
+        sign = -1
+
+        target_hive = Hive(filename)
+        target_data = target_hive['processed_data'][vidx,:,:,:]
+        target_data_time = target_hive['data_time'][vidx,:,:]
+        n_slow,n_depth,n_fast = target_data.shape
+
+        goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
+        xshifts = oversampling_factor*sign*self.hive['/frames/%s/x_shifts'%k][:]
+        yshifts = oversampling_factor*sign*self.hive['/frames/%s/y_shifts'%k][:]+np.arange(n_slow)
+
+        ref_space_x = self.hive['reference_position/x'][:]
+        ref_space_y = self.hive['reference_position/y'][:]
         
-    def correct_reference_a(self,kernel_size=10,do_plot=False):
-        try:
-            si = self.hive['sum_image'][:,:]
-            ai = self.hive['average_image'][:,:]
-            ci = self.hive['counter_image'][:,:]
-            eps = np.finfo(float).eps
-            ci = ci + eps
-            corri = self.hive['correlation_image'][:,:]
-
-            rx1 = self.hive['reference_coordinates/x1']
-            rx2 = self.hive['reference_coordinates/x2']
-            ry1 = self.hive['reference_coordinates/y1']
-            ry2 = self.hive['reference_coordinates/y2']
-        except Exception as e:
-            sys.exit('Has this Series been rendered? If not, do that first.')
-
-        sy,sx = si.shape
+        out_vol = np.nan*np.ones((len(ref_space_y)+oversampling_factor,n_depth,len(ref_space_x)+oversampling_factor),dtype=np.complex64)
+        max_goodness = np.ones((len(ref_space_y)+oversampling_factor,len(ref_space_x)+oversampling_factor))*goodness_threshold
+        out_time = np.ones((len(ref_space_y)+oversampling_factor,len(ref_space_x)+oversampling_factor))*np.nan
         
-        def hcentroid(im):
-            hidx = np.arange(im.shape[1])
-            return np.sum(im*hidx,axis=1)/np.sum(im,axis=1)
-    
-        hc = -hcentroid(ci[int(ry1):int(ry2),int(rx1):int(rx2)])
-        hc = (hc - np.mean(hc))
-
-
-        rsy = len(hc)
-        cut = rsy//20
-        hc[:cut] = hc.mean()
-        hc[-cut:] = hc.mean()
-
-        
-        def velocity_to_position(vec):
-            y = np.cumsum(vec)
-            x = np.arange(len(vec))
-            fit = np.polyfit(x,y,1)
-            yfit = np.polyval(fit,x)
-            return (y - yfit)/float(len(vec))
-
-
-        corrprof = np.max(corri/ci,axis=1)[ry1:ry2]
-        vprof = np.max(ci,axis=1)[ry1:ry2]
-        vc = velocity_to_position(vprof)
-        
-        vc[:cut] = vc.mean()
-        vc[-cut:] = vc.mean()
-
-        comp = hc + vc*1j
-        comp = fftconvolve(comp,np.ones((cut)),mode='same')/float(cut)
-
-        hc = np.real(comp)
-        vc = np.imag(comp)
-        
-        reference = self.hive['reference_frame'][:,:]
-        original_sy,original_sx = reference.shape
-        # downsample the movement estimates:
-        for fk in self.hive['frames'].keys():
-            for idx in self.hive['frames'][fk].keys():
-                oversample_factor = self.hive['frames'][fk][idx]['oversample_factor']
-                break
-
-        hc = np.reshape(hc,(original_sy,int(oversample_factor))).mean(axis=1)
-        vc = np.reshape(vc,(original_sy,int(oversample_factor))).mean(axis=1)
-
-        to_XX,to_YY = np.meshgrid(np.arange(original_sx),np.arange(original_sy))
-
-        from_XX = (to_XX.T + hc).T
-        from_YY = (to_YY.T + vc).T
-
-        to_XX = to_XX.ravel()
-        to_YY = to_YY.ravel()
-        from_XX = from_XX.ravel()
-        from_YY = from_YY.ravel()
-
-        # use scipy.interpolate.griddata parlance for clarity
-        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.griddata.html
-        points = np.vstack((from_XX,from_YY)).T
-        values = reference.ravel()
-
-        corrected_reference = griddata(points,values,(to_XX.ravel(),to_YY.ravel()),method='cubic')
-        corrected_reference = np.reshape(corrected_reference,reference.shape)
-        if do_plot:
-            clim = np.percentile(reference,(1,99.5))
-            plt.figure()
-            plt.imshow(reference,cmap='gray',interpolation='none',clim=clim)
-            plt.title('uncorrected')
-            plt.colorbar()
-            plt.figure()
-            plt.imshow(corrected_reference,cmap='gray',interpolation='none',clim=clim)
-            plt.title('corrected a')
-            plt.colorbar()
-            #plt.show()
-
-
-        self.hive.put('/corrected_a/reference_frame',corrected_reference)
-        self.hive.put('/corrected_a/horizontal_correction',hc)
-        self.hive.put('/corrected_a/vertical_correction',vc)
-
-
-    def correct_reference_b(self,do_plot=False,goodness_threshold=0,medfilt_kernel=0,ignore_y=False):
-
-        files = self.hive['frames'].keys()
-        frame_keys = []
-        for fn in files:
-                frames = self.hive['frames/%s'%fn].keys()
-                for f in frames:
-                    frame_keys.append('/frames/%s/%s'%(fn,f))
-
-        all_yshifts = []
-        all_xshifts = []
-        all_goodnesses = []
-        for fk in frame_keys:
-            ys = self.hive[fk]['y_shifts'][:]
-            all_yshifts.append(ys)
-            xs = self.hive[fk]['x_shifts'][:]
-            all_xshifts.append(xs)
-            g = self.hive[fk]['goodnesses'][:]
-            all_goodnesses.append(g)
-
-        all_yshifts = np.array(all_yshifts)
-        all_xshifts = np.array(all_xshifts)
-        all_goodnesses = np.array(all_goodnesses)
-        # now all_yshifts and all_xshifts are 2D arrays;
-        # the first dimension (vertical) corresponds to
-        # frame index, and the second dimension (horizontal)
-        # corresponds to row index within the frame
-        
-        if do_plot:
-            plt.figure()
-            plt.subplot(1,3,1)
-            plt.imshow(all_xshifts,interpolation='none',aspect='normal')
-            plt.subplot(1,3,2)
-            plt.imshow(all_yshifts,interpolation='none',aspect='normal')
-            plt.subplot(1,3,3)
-            plt.imshow(all_goodnesses,interpolation='none',aspect='normal')
-
-        # diff these:
-        # we do this to effectively remove outliers,
-        # since the line-to-line differences in x
-        # and y can be anticipated while the absolute
-        # positions cannot be (as well)
-        
-        d_yshifts_unfixed = np.diff(all_yshifts,axis=1)
-        d_xshifts_unfixed = np.diff(all_xshifts,axis=1)
-
-        # make a goodness mask:
-        if goodness_threshold:
-            dg = np.min(np.array([all_goodnesses[:,1:],all_goodnesses[:,:-1]]),axis=0)
-            goodness_mask = np.ones(dg.shape)*np.nan
-            goodness_mask[np.where(dg>goodness_threshold)] = 1.0
-
-        if do_plot:
-            plt.figure()
-            plt.subplot(1,2,1)
-            plt.imshow(d_xshifts_unfixed,interpolation='none',aspect='normal',clim=(-10,10))
-            plt.title('dx, before removing outliers')
-            plt.subplot(1,2,2)
-            plt.imshow(d_yshifts_unfixed,interpolation='none',aspect='normal',clim=(-10,10))
-            plt.title('dy, before removing outliers')
-
-        # keep track of the medians of the first columns,
-        # because we need these values to reconstruct
-        # the absolute positions with cumsum below
-        first_y = np.median(all_yshifts[:,0])
-        first_x = np.median(all_xshifts[:,0])
-
-        # remove outliers (replace with nans)
-        # thresholds of .5,-.5 are somewhat artibrary, between
-        # thresholds established by maximum drift and saccade speeds
-        # Using max values for the latter from Martinez-Conde, 2004
-        # (0.5 deg/s and 97 deg/s, resp.), we get limits of
-        # 0.01 um and 1.8 um, resp. Practically, any threshold in
-        # (0.33,5.0] works, provided we do not exclude
-        # the smallest possible shift (0.33 in the case of
-        # oversampling by 3)
-        def outlier_to_nan(arr,ulim=.34,llim=-.34):
-            invalid = np.where(np.logical_or(arr>ulim,arr<llim))
-            arr[invalid] = np.nan
-            return arr
-
-        d_yshifts = outlier_to_nan(d_yshifts_unfixed)
-        d_xshifts = outlier_to_nan(d_xshifts_unfixed)
-
-        if goodness_threshold:
-            d_yshifts = d_yshifts*goodness_mask
-            d_xshifts = d_xshifts*goodness_mask
-        
-        if do_plot:
-            plt.figure()
-            plt.subplot(1,2,1)
-            plt.title('dx, after removing outliers')
-            plt.imshow(d_xshifts,interpolation='none',aspect='normal',clim=(-10,10))
-            plt.subplot(1,2,2)
-            plt.imshow(d_yshifts,interpolation='none',aspect='normal',clim=(-10,10))
-            plt.title('dy, after removing outliers')
+        valid_idx = np.where(goodnesses>=goodness_threshold)[0]
+        for idx in valid_idx:
+            xs = xshifts[idx]
+            ys = yshifts[idx]
+            g = goodnesses[idx]
+            xerr = np.abs(xs-ref_space_x)
+            yerr = np.abs(ys-ref_space_y)
+            put_x1 = np.argmin(xerr)
+            put_y1 = np.argmin(yerr)
             
-        # now, nanmean these diffs to get the average
-        # lag biases; these will be integrated to get
-        # the eye position
-        d_y = np.nanmean(d_yshifts,axis=0)
-        d_x = np.nanmean(d_xshifts,axis=0)
-        # original, working version:
-        #d_y = np.array([first_y]+list(d_y))
-        #d_x = np.array([first_x]+list(d_x))
-        # modified version, 2017.06.30
-        d_y = np.array([d_y[0]]+list(d_y))
-        d_x = np.array([d_x[0]]+list(d_x))
-
-
-        #if medfilt_kernel:
-        #    d_y = medfilt(d_y,medfilt_kernel)
-        #    d_x = medfilt(d_x,medfilt_kernel)
-        
-        if do_plot:
-            plt.figure()
-            plt.subplot(1,2,1)
-            plt.plot(d_x)
-            plt.subplot(1,2,2)
-            plt.plot(d_y)
             
-        vc = np.cumsum(d_y)
-        hc = np.cumsum(d_x)
-        #if medfilt_kernel:
-        #    hc = medfilt(hc,medfilt_kernel)
-        #    vc = medfilt(vc,medfilt_kernel)
-
-        if ignore_y:
-            vc = vc*0.0
-
-        if do_plot:
-            plt.figure()
-            plt.subplot(1,3,1)
-            plt.plot(hc)
-            plt.subplot(1,3,2)
-            plt.plot(vc)
-            plt.subplot(1,3,3)
-            plt.plot(hc,vc)
-            
-
-        if False: # save eye motion data to a MAT file
-            outdict = {}
-            outdict['horizontal_eye_position_pixels'] = hc
-            outdict['vertical_eye_position_pixels'] = vc
-            savemat('eye_motion.mat',outdict)
-
-        reference = self.hive['reference_frame'][:,:]
-        original_sy,original_sx = reference.shape
-        
-        # downsample the movement estimates:
-        for fk in self.hive['frames'].keys():
-            for idx in self.hive['frames'][fk].keys():
-                oversample_factor = self.hive['frames'][fk][idx]['oversample_factor']
-                break
+            in_data0 = target_data[idx,:,:]
+            in_time0 = target_data_time[idx,:]
 
             
-        to_XX,to_YY = np.meshgrid(np.arange(original_sx),np.arange(original_sy))
+            for xo in range(oversampling_factor):
+                for yo in range(oversampling_factor):
+                    in_data = in_data0.copy()
+                    in_time = in_time0.copy()
+                    put_x = (np.arange(n_fast,dtype=np.integer)*oversampling_factor)+xo+put_x1
+                    put_y = idx+yo+put_y1
 
-        from_XX = (to_XX.T + hc).T
-        from_YY = (to_YY.T + vc).T
+                    while put_x.max()>=out_vol.shape[2]:
+                        put_x=put_x[:-1]
+                        in_data=in_data[:,:-1]
+                        in_time=in_time[:-1]
+                    while put_x.min()<0:
+                        put_x=put_x[1:]
+                        in_data=in_data[:,1:]
+                        in_time=in_time[1:]
+                    #print put_y,put_x,max_goodness.shape
+                    if max_goodness[put_y,put_x].mean()<=g:
+                        max_goodness[put_y,put_x]=g
+                        out_vol[put_y,:,put_x] = in_data.T
+                        out_time[put_y,put_x] = in_time
 
-        to_XX = to_XX.ravel()
-        to_YY = to_YY.ravel()
-        from_XX = from_XX.ravel()
-        from_YY = from_YY.ravel()
+        return out_vol,out_time
 
-        # use scipy.interpolate.griddata parlance for clarity
-        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.griddata.html
-        points = np.vstack((from_XX,from_YY)).T
-        values = reference.ravel()
-
-        corrected_reference = griddata(points,values,(to_XX.ravel(),to_YY.ravel()),method='cubic')
-        corrected_reference = np.reshape(corrected_reference,reference.shape)
-
-        clim = np.percentile(reference,(1,99.5))
-        
-        if do_plot:
-            plt.figure()
-            plt.imshow(reference,cmap='gray',interpolation='none',clim=clim)
-            plt.title('uncorrected')
-            plt.colorbar()
-            plt.figure()
-            plt.imshow(corrected_reference,cmap='gray',interpolation='none',clim=clim)
-            plt.title('corrected b')
-            plt.colorbar()
-            plt.show()
-
-        self.hive.put('/corrected_b/reference_frame',corrected_reference)
-        self.hive.put('/corrected_b/horizontal_correction',hc)
-        self.hive.put('/corrected_b/vertical_correction',vc)
-        
-        
-        
-    def add(self,filename,vidx,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0):
+    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0):
         
         print 'Adding %s, volume %d.'%(filename,vidx)
         
-        target_tag = self.tag_template%(os.path.split(filename)[1],vidx)
-
-        if self.hive.has('/frames/%s'%target_tag) and not overwrite:
-            print 'Series already has entry for %s.'%target_tag
+        if key is None:
+            self.key = self.make_key(filename,vidx,layer_names)
+        else:
+            self.key = key
+        
+        if self.hive.has('/frames/%s'%self.key) and not overwrite:
+            print 'Series already has entry for %s.'%self.key
             return
 
+        
         target,label = self.get_image(filename,vidx,layer_names)
+        self.db.put(self.key,filename,vidx)
+
         reference = self.reference
+        
         y,x,g = utils.strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter)
 
-        self.hive.put('/frames/%s/x_shifts'%target_tag,x)
-        self.hive.put('/frames/%s/y_shifts'%target_tag,y)
-        self.hive.put('/frames/%s/goodnesses'%target_tag,g)
-        self.hive.put('/frames/%s/reference'%target_tag,[0])
-        self.hive.put('/frames/%s/oversample_factor'%target_tag,oversample_factor)
+        self.hive.put('/frames/%s/x_shifts'%self.key,x)
+        self.hive.put('/frames/%s/y_shifts'%self.key,y)
+        self.hive.put('/frames/%s/goodnesses'%self.key,g)
+        self.hive.put('/frames/%s/reference'%self.key,[0])
+        self.hive.put('/frames/%s/oversample_factor'%self.key,oversample_factor)
 
-    def is_registered(self):
-        counter = 0
-        try:
-            my_frames = self.hive['/frames'].keys()
-            for mf in my_frames:
-                for fileindex in self.hive['/frames'][mf].keys():
-                    counter = counter + 1
-        except Exception as e:
-            print 'foo',e
-            sys.exit()
-        return counter
-                
+    def get_image(self,filename,vidx,layer_names):
         
-    def get_image(self,filename_stub,vidx,layer_names):
-        
-        filename = os.path.join(self.working_directory,filename_stub)
         target_hive = Hive(filename)
-
         if layer_names is None:
             # if the layer_names list is missing, use the first layer as a default
             # this seems like okay behavior since most times there's only one projection
@@ -1203,6 +778,20 @@ class Series:
             out = target_h5['projections'][layer_names[0]][vidx,:,:]    
         return out,label
     
+    def is_registered(self):
+        counter = 0
+        try:
+            my_frames = self.hive['/frames'].keys()
+            return len(my_frames)
+            for mf in my_frames:
+                for fileindex in self.hive['/frames'][mf].keys():
+                    counter = counter + 1
+        except Exception as e:
+            print 'foo',e
+            sys.exit()
+        return counter
+                
+        
     def get_volume(self,filename_stub,vidx,data_block):
         filename = os.path.join(self.working_directory,filename_stub)
         target_h5 = H5(filename)
@@ -1266,27 +855,21 @@ class Series:
         return out
 
     def goodness_histogram(self):
-        files = self.hive['frames'].keys()
         all_goodnesses = []
-        for filename in files:
-            keys = self.hive['/frames/%s'%filename].keys()
-            for k in keys:
-                print filename
-                goodnesses = list(self.hive['/frames/%s/%s/goodnesses'%(filename,k)][:])
-                all_goodnesses = all_goodnesses + goodnesses
+        keys = self.db.dictionary.keys()
+        for k in keys:
+            gfn = os.path.join(os.path.join(os.path.join(self.series_directory,'frames'),k),'goodnesses.npy')
+            goodnesses = list(np.load(gfn))
+            all_goodnesses = all_goodnesses + goodnesses
 
         plt.hist(all_goodnesses,500)
         plt.show()
     
-    def render(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,frames_to_save=[],left_crop=0,right_crop=0):
+    def render(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,left_crop=0,right_crop=0):
 
-        if len(frames_to_save):
-            frames_directory = self.series_filename.replace('.hdf5','')+'_saved_frames'
-            if not os.path.exists(frames_directory):
-                os.makedirs(frames_directory)
-
-        files = self.hive['frames'].keys()
-
+        keys = self.hive['frames'].keys()
+        keys.sort()
+        
         sign = -1
         # remember the convention here: x and y shifts are the
         # amount of shift required to align the line in question
@@ -1301,56 +884,63 @@ class Series:
 
         reg_dict = {}
         
-        for filename in files:
-            keys = self.hive['/frames/%s'%filename].keys()
-            keys.sort()
-            for k in keys:
-                print k
-                test,label = self.get_image(filename,0,layer_names)
-                n_slow,n_fast = test.shape
+        for k_idx,k in enumerate(keys):
+            filename,vidx = self.db.get(k)
+            test,label = self.get_image(filename,0,layer_names)
 
-                goodnesses = self.hive['/frames/%s/%s/goodnesses'%(filename,k)][:]
-                xshifts = sign*self.hive['/frames/%s/%s/x_shifts'%(filename,k)][:]
-                yshifts = sign*self.hive['/frames/%s/%s/y_shifts'%(filename,k)][:]
+            n_slow,n_fast = test.shape
+            goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
+            xshifts = sign*self.hive['/frames/%s/x_shifts'%k][:]
+            yshifts = sign*self.hive['/frames/%s/y_shifts'%k][:]
 
-                xshifts = np.squeeze(xshifts)
-                yshifts = np.squeeze(yshifts)
+            xshifts = np.squeeze(xshifts)
+            yshifts = np.squeeze(yshifts)
+
+            xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses)
+
+            use_for_limits = np.where(goodnesses>=goodness_threshold)[0]
+            yshifts = yshifts + valid
+
+            #try:
+            #    print k,np.min(xshifts[use_for_limits]),np.max(xshifts[use_for_limits])
+            #except Exception as e:
+            #    print k,e
                 
-                xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses)
+            try:
+                newxmin = np.min(xshifts[use_for_limits])
+                newxmax = np.max(xshifts[use_for_limits])
+                newymin = np.min(yshifts[use_for_limits])
+                newymax = np.max(yshifts[use_for_limits])
 
-                use_for_limits = np.where(goodnesses>=goodness_threshold)
+                xmin = min(xmin,newxmin)
+                xmax = max(xmax,newxmax)
+                ymin = min(ymin,newymin)
+                ymax = max(ymax,newymax)
+                if False:
+                    print xmin,xmax,ymin,ymax
+                    plt.plot(k_idx,xmin,'rs')
+                    plt.plot(k_idx,xmax,'ro')
+                    plt.plot(k_idx,ymin,'gs')
+                    plt.plot(k_idx,ymax,'go')
+                    plt.pause(.0001)
+            except Exception as e:
+                print e
 
-                try:
-                    newxmin = np.min(xshifts[use_for_limits])
-                    newxmax = np.max(xshifts[use_for_limits])
-                    newymin = np.min(yshifts[use_for_limits])
-                    newymax = np.max(yshifts[use_for_limits])
-                    
-                    xmin = min(xmin,newxmin)
-                    xmax = max(xmax,newxmax)
-                    ymin = min(ymin,newymin)
-                    ymax = max(ymax,newymax)
-                except Exception as e:
-                    print e
-
-                yshifts = yshifts + valid
-
-                reg_dict[(filename,k)] = (xshifts,yshifts,goodnesses,valid)
-
+            reg_dict[k] = (xshifts,yshifts,goodnesses,valid)
 
         canvas_width = xmax-xmin+n_fast
-        canvas_height = ymax-ymin+n_slow
+        canvas_height = ymax-ymin+10
 
         ref_x1 = 0 - xmin
         ref_y1 = 0 - ymin
         ref_x2 = ref_x1 + n_fast
         ref_y2 = ref_y1 + n_slow
-        
+
         self.hive.put('/reference_coordinates/x1',ref_x1)
         self.hive.put('/reference_coordinates/x2',ref_x2)
         self.hive.put('/reference_coordinates/y1',ref_y1)
         self.hive.put('/reference_coordinates/y2',ref_y2)
-        
+
         for key in reg_dict.keys():
             xs,ys,g,v = reg_dict[key]
             xs = xs - xmin
@@ -1358,7 +948,7 @@ class Series:
             reg_dict[key] = (xs,ys,g,v)
                 
 
-        canvas_width = int(canvas_width*oversample_factor)
+        canvas_width = int((canvas_width+1)*oversample_factor)
         canvas_height = int((canvas_height+1)*oversample_factor)
 
         rmean = np.mean(self.reference)
@@ -1368,28 +958,46 @@ class Series:
         ref_x2 = int(ref_x2*oversample_factor)
         ref_y1 = int(ref_y1*oversample_factor)
         ref_y2 = int(ref_y2*oversample_factor)
-        ref_oversampled = zoom(self.reference,oversample_factor)
-        embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
+
+        reference = self.reference
+        ref_oversampled = zoom(reference,oversample_factor)
         
+        embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
+
+        self.hive.put('/reference_position/y',np.arange(canvas_height)-ref_y1)
+        self.hive.put('/reference_position/x',np.arange(canvas_width)-ref_x1)
+        
+
         sum_image = np.zeros((canvas_height,canvas_width))
         counter_image = np.zeros((canvas_height,canvas_width))
         correlation_image = np.zeros((canvas_height,canvas_width))
 
+
+        
+        if do_plot:
+            mov = GIF('temp.gif',fps=5)
+            dpi = 100.0
+            fig = plt.figure(figsize=(3*canvas_width/dpi,canvas_height/dpi))
+            ax1 = fig.add_axes([0,0,.3333,1])
+            ax2 = fig.add_axes([.3333,0,.3333,1])
+            ax3 = fig.add_axes([.6667,0,.3333,1])
+        
         for k in sorted(reg_dict.keys()):
+            #if not k=='_home_rjonnal_data_Dropbox_Share_fdml_faooct_01_DataSet1_0100_000000_CONES':
+            #    continue
             xshifts,yshifts,goodnesses,indices = reg_dict[k]
-            filename = k[0]
-            frame_index = int(k[1])
+            temp = self.db.get(k)
+            filename = temp[0]
+            frame_index = int(temp[1])
             im,label = self.get_image(filename,frame_index,layer_names)
             correlation_vector = np.zeros((n_slow))
-
+            
+            this_image = np.zeros((canvas_height,canvas_width))
+            
             for idx,xs,ys,g in zip(indices,xshifts,yshifts,goodnesses):
                 if g<goodness_threshold:
                     continue
-                xs = xs + left_crop
-                if left_crop or right_crop:
-                    line = im[idx,left_crop:-right_crop]
-                else:
-                    line = im[idx,:]
+                line = im[idx,:]
                 line = np.expand_dims(line,0)
                 block = zoom(line,oversample_factor)
                 bsy,bsx = block.shape
@@ -1398,46 +1006,62 @@ class Series:
                 y1 = int(np.round(ys*oversample_factor))
                 y2 = y1 + bsy
 
-                ref_section = embedded_reference[y1:y2,x1:x2]
+                #ref_section = embedded_reference[y1:y2,x1:x2]
 
-                while block.shape[1]>ref_section.shape[1]:
-                    block = block[:,:-1]
+                #while block.shape[1]>ref_section.shape[1]:
+                #    block = block[:,:-1]
 
-                ref_section = ref_section.ravel()
+                #ref_section = ref_section.ravel()
                 
-                corr = np.corrcoef(ref_section,block.ravel())[1,0]
-                correlation_image[y1:y2,x1:x2] = correlation_image[y1:y2,x1:x2] + corr
-                correlation_vector[idx] = corr
-                if corr>correlation_threshold:
+                #corr = np.corrcoef(ref_section,block.ravel())[1,0]
+                #correlation_image[y1:y2,x1:x2] = correlation_image[y1:y2,x1:x2] + corr
+                #correlation_vector[idx] = corr
+                if True:#corr>correlation_threshold:
+                    #print 'sum_image shape',sum_image.shape
+                    #print 'x1,x2',x1,x2
+                    #print 'block shape',block.shape
+
+                    this_image[y1:y2,x1:x2] = this_image[y1:y2,x1:x2] + block
                     sum_image[y1:y2,x1:x2] = sum_image[y1:y2,x1:x2] + block
                     counter_image[y1:y2,x1:x2] = counter_image[y1:y2,x1:x2] + 1.0
                     
-            self.hive.put('/frames/%s/%s/correlations'%(filename,k[1]),correlation_vector)
+            #self.hive.put('/frames/%s/correlations'%k,correlation_vector)
             if do_plot:
+
+                try:
+                    clim = np.percentile(this_image.ravel()[np.where(this_image.ravel())],(1,99))
+                except Exception as e:
+                    clim = None
+
+                #fig.clear()
+
+                ax1.clear()
+                ax1.imshow(this_image,cmap='gray',interpolation='none',clim=clim)
+                
                 temp = counter_image.copy()
                 temp[np.where(temp==0)] = 1.0
                 av = sum_image/temp
-                plt.clf()
-                plt.subplot(1,2,1)
-                plt.cla()
+
                 try:
                     clim = np.percentile(av.ravel()[np.where(av.ravel())],(1,99))
                 except Exception as e:
                     clim = None
-                plt.imshow(av,cmap='gray',interpolation='none',clim=clim)
+                ax2.clear()
+                ax2.imshow(av,cmap='gray',interpolation='none',clim=clim)
 
-                plt.subplot(1,2,2)
-                plt.cla()
-                plt.imshow(counter_image)
-                plt.colorbar()
+                ax3.clear()
+                ax3.imshow(counter_image)
+                #plt.colorbar()
+                mov.add(fig)
                 plt.pause(.001)
 
-            
+        mov.make()
         temp = counter_image.copy()
         temp[np.where(temp==0)] = 1.0
         av = sum_image/temp
 
-        cropper = self.get_cropper(counter_image)
+        #cropper = self.get_cropper(counter_image)
+        cropper = lambda x: x
         self.hive.put('/correlation_image/%s'%label,cropper(correlation_image))
         self.hive.put('/counter_image/%s'%label,cropper(counter_image))
         self.hive.put('/average_image/%s'%label,cropper(av))
@@ -1454,8 +1078,21 @@ class Series:
             plt.colorbar()
 
             plt.show()
-        
-            
+
+    def get_cropper(self,im):
+        # return a cropper function that
+        # will crop images according to im's
+        # empty (uninformative) borders
+        vprof = np.std(im,axis=1)
+        valid_region_y = np.where(vprof)[0]
+        hprof = np.std(im,axis=0)
+        valid_region_x = np.where(hprof)[0]
+        y1 = valid_region_y[0]
+        y2 = valid_region_y[-1]
+        x1 = valid_region_x[0]
+        x2 = valid_region_x[-1]
+        return lambda x: x[y1:y2,x1:x2]
+    
     def render_stack(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,left_crop=0,right_crop=0):
 
         files = self.hive['frames'].keys()
@@ -1483,9 +1120,9 @@ class Series:
                 test,label = self.get_image(filename,0,layer_names)
                 n_slow,n_fast = test.shape
 
-                goodnesses = self.hive['/frames/%s/%s/goodnesses'%(filename,k)][:]
-                xshifts = sign*self.hive['/frames/%s/%s/x_shifts'%(filename,k)][:]
-                yshifts = sign*self.hive['/frames/%s/%s/y_shifts'%(filename,k)][:]
+                goodnesses = self.hive['/frames/%s/%s/goodnesses'%k][:]
+                xshifts = sign*self.hive['/frames/%s/%s/x_shifts'%k][:]
+                yshifts = sign*self.hive['/frames/%s/%s/y_shifts'%k][:]
 
                 xshifts = np.squeeze(xshifts)
                 yshifts = np.squeeze(yshifts)
@@ -1509,7 +1146,7 @@ class Series:
 
                 yshifts = yshifts + valid
 
-                reg_dict[(filename,k)] = (xshifts,yshifts,goodnesses,valid)
+                reg_dict[k] = (xshifts,yshifts,goodnesses,valid)
                 n_frames = n_frames + 1
 
         canvas_width = xmax-xmin+n_fast

@@ -1,5 +1,9 @@
 import numpy as np
 from matplotlib import pyplot as plt
+import scipy.optimize as spo
+import scipy.signal as sps
+import sys,os
+
 
 def nxcorr(vec1,vec2,do_plot=False):
     '''Given two vectors TARGET and REFERENCE, nxcorr(TARGET,REFERENCE)
@@ -29,12 +33,6 @@ def nxcorr(vec1,vec2,do_plot=False):
     peakIdx = np.where(nxcval==peakVal)[0][0]
 
 
-    if False:
-        if l1%2!=l2%2:
-            shift = np.fix(peakIdx-len(nxcval)/2.0)
-        else:
-            shift = np.fix(peakIdx-len(nxcval)/2.0) + 1
-
     if len(nxcval)%2:
         shift = (len(nxcval)-1)/2.0 - peakIdx
     else:
@@ -49,8 +47,6 @@ def nxcorr(vec1,vec2,do_plot=False):
         plt.subplot(3,1,3)
         plt.plot(nxcval)
         plt.show()
-        sys.exit()
-
     return shift,peakVal/len(vec1)
 
 def findShift(vec1,vec2):
@@ -137,11 +133,19 @@ def shear(im,order,oversample=1.0,sameshape=False,y1=None,y2=None):
     return newim
 
 
-def find_peaks(prof,intensity_threshold=-np.inf,gradient_threshold=-np.inf):
+def find_peaks(prof,intensity_threshold=-np.inf,gradient_threshold=-np.inf,permit_edge_peaks=False):
+
+    if permit_edge_peaks:
+        # add -inf to either end to permit peaks at edges
+        prof = np.array([-np.inf]+list(prof)+[-np.inf])
+    else:
+        # add inf to either end to exclude peaks at edges
+        prof = np.array([np.inf]+list(prof)+[np.inf])
+        
     left = prof[:-2]
     center = prof[1:-1]
     right = prof[2:]
-    peaks = np.where(np.logical_and(center>right,center>left))[0]+1
+    peaks = np.where(np.logical_and(center>right,center>left))[0]
     peak_vals = prof[peaks]
     all_gradients = np.abs(np.diff(prof))
     l_gradients = all_gradients[:-1]
@@ -226,8 +230,6 @@ def flatten_volume(avol,order=2):
     for y in range(sy):
         z1 = fitcoms[y]
         tempvol[y,:sz-z1,:] = avol[y,z1:,:]
-
-
     slow_proj = avol.mean(axis=0)
     slow_proj = slow_proj**2
     coms = bscan_coms(slow_proj)
@@ -242,40 +244,237 @@ def flatten_volume(avol,order=2):
 
     return tempvol2
 
-def project_cones(vol,peak_threshold=500.0,projection_depth=5,do_plot=False):
+def flythrough(vol,start=0,end=None):
+    plt.figure(figsize=(16,12))
+    if end is None:
+        end=vol.shape[1]
+    for k in range(start,end):
+        plt.cla()
+        plt.imshow(vol[:,k,:],interpolation='none',cmap='gray')
+        plt.title(k)
+        plt.pause(.1)
+
+def model_segment_volume(vol,model,label_dictionary,gaussian_sigma=0.0):
+    # an attempt at a shortcut to the very slow loop approach below
+    # 1. nanreplace the volume with mean value to allow convolution without errors
+    avol = np.abs(vol)
+
+    # make a mask to keep nan values nan in the output
+    mask = np.sum(avol,axis=1)
+    mask = mask/mask
+
+    nan_true = np.zeros(mask.shape)
+    nan_true[np.where(np.isnan(mask))] = 1
+    nan_false = 1-nan_true
+    
+    n_slow,n_depth,n_fast = avol.shape
+    mean_val_vec = np.nanmean(np.nanmean(avol,2),0)
+    
+    for depth in range(n_depth):
+        cut = avol[:,depth,:]
+        cut[np.where(np.isnan(cut))] = mean_val_vec[depth]
+
+    if gaussian_sigma>0:
+        # 2. make a 3D gaussian kernel with nonzero sigma in fast and slow dimensions,
+        #    but depth 1 make it's width and height 10*sigma to get very close to zero
+        #    at edges
+        diameter = int(np.ceil(gaussian_sigma*10.0))
+        if not diameter%2:
+            diameter = diameter + 1
+        radius = float(diameter)/2.0
+        XX,YY = np.meshgrid(np.arange(diameter)-radius,np.arange(diameter)-radius)
+        gcut = np.exp(-(XX**2+YY**2)/(2*gaussian_sigma**2))
+        kernel = np.zeros((diameter,n_depth,diameter))
+        kernel[:,n_depth//2,:] = gcut
+
+        # 3. use fftconvolve to convolve 
+        savol = sps.fftconvolve(avol,kernel,mode='same')
+    else:
+        savol = avol
+    #looks like this works?
+    #flythrough(avol,170,200)
+    #flythrough(savol,170,200)
+
+    # 4. explicitly compute normxcorr to incorporate broadcasting
+    #    first we have to move the depth dimension to the back
+    savol = np.transpose(savol,(0,2,1))
+    avol = np.transpose(avol,(0,2,1))
+    
+    if len(model)>savol.shape[2]:
+        model = model[:savol.shape[2]]
+    if len(model)<savol.shape[2]:
+        savol = savol[:,:,:len(model)]
+        avol = avol[:,:,:len(model)]
+        
+    nxlen = len(model)
+    nxc = np.abs(np.fft.ifft(np.fft.fft(savol,axis=2)*np.conj(np.fft.fft(model))))
+
+    peak = np.argmax(nxc,axis=2)
+    peak[np.where(peak>nxlen//2)] = peak[np.where(peak>nxlen//2)] - nxlen
+
+    out_dict = {}
+
+    for key in label_dictionary.keys():
+        surf = peak+label_dictionary[key]
+        surf = surf*mask
+        
+        out_dict[key+'_surface'] = surf
+        asurf = mask*nan_false.copy()
+        for i_slow in range(n_slow):
+            #print '%d of %d'%(i_slow+1,n_slow)
+            for i_fast in range(n_fast):
+                # continue if this profile is all nans
+                if nan_true[i_slow,i_fast]:
+                    continue
+                vec = savol[i_slow,i_fast,:]
+                #print surf[i_slow,i_fast],'->',
+                try:
+                    asurf[i_slow,i_fast] = ascend(vec,surf[i_slow,i_fast],do_plot=False)
+                except ValueError as ve:
+                    print ve
+                    asurf[i_slow,i_fast] = surf[i_slow,i_fast]
+                #print surf[i_slow,i_fast]
+        out_dict[key+'_surface_ascended'] = asurf
+
+    return out_dict
+
+        
+    
+
+def model_segment_volume_slow(vol,model,label_dictionary,gaussian_sigma=0.0):
+    # this method must accept volumes with nans; use nanmean instead of mean
+    # also, transpose slow/depth to facilitate broadcasting
+    vol = np.transpose(vol,(1,0,2))
+    n_depth,n_slow,n_fast = vol.shape
+    XX,YY = np.meshgrid(np.arange(n_fast),np.arange(n_slow))
+
+    out_dict = {}
+    for key in label_dictionary.keys():
+        out_dict[key] = np.ones((n_slow,n_fast))*np.nan
+    
+    for i_slow in range(n_slow):
+        print '%d of %d'%(i_slow+1,n_slow)
+        for i_fast in range(n_fast):
+            print '\t%d of %d'%(i_fast+1,n_fast)
+            # continue if this profile is all nans
+            if all(np.isnan(vol[:,i_slow,i_fast])):
+                continue
+            if gaussian_sigma>0.0:
+                xx = XX-i_fast
+                yy = YY-i_slow
+                g = np.exp(-(xx**2+yy**2)/gaussian_sigma**2)
+                g = g/np.sum(g)
+            
+                temp = np.abs(vol)*g
+                temp = np.nansum(np.nansum(temp,2),1)
+            else:
+                temp = np.abs(vol[:,i_slow,i_fast])
+
+            shift,corr = nxcorr(model,temp,do_plot=False)
+
+            for lab in label_dictionary.keys():
+                pos = ascend(temp,int(label_dictionary[lab]+shift))
+                out_dict[lab][i_slow,i_fast] = int(pos)
+    return out_dict
+    
+
+def project_cones(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''):
     # flatten a complex valued volume and project
     # the goal of this is to make volumes just flat enough
     # for en face projection of cone mosaic
     avol = np.abs(vol)
-        
-    flatvol = flatten_volume(flatten_volume(avol),5)
 
+    test_orders = range(5)
+    grads = []
+    for to in test_orders:
+        flatvol = flatten_volume(avol,to)
+        grads.append(np.max(np.abs(np.diff(np.mean(np.mean(flatvol,2),0)))))
+
+    flatvol = flatten_volume(avol,test_orders[np.argmax(grads)])
+
+    if False:
+        plt.subplot(2,2,1)
+        plt.imshow(np.mean(avol,2))
+        plt.subplot(2,2,2)
+        plt.imshow(np.mean(flatvol,2))
+        plt.subplot(2,2,3)
+        plt.semilogy(np.mean(np.mean(avol,2),0))
+        plt.ylim((100,1100))
+        plt.subplot(2,2,4)
+        plt.semilogy(np.mean(np.mean(flatvol,2),0))
+        plt.ylim((100,1100))
+        plt.show()
+        sys.exit()
     # NEXT: FIND PEAKS, SEGMENT LAYERS, AND PROJECT
-    prof = flatvol.mean(2).mean(0)
+
+
+
+    isos = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    sisos = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    cost = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    srs = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    rpe = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+
+    prof = flatvol[20:-20,:,10:-10].mean(2).mean(0)
     z = np.arange(len(prof))
     peaks = find_peaks(prof)
+    peak_threshold = peak_threshold*np.max(prof)
     peaks = peaks[np.where(prof[peaks]>peak_threshold)]
 
     
-    # expected case:
     if len(peaks)==3:
+        # expected case:
         isos_idx = peaks[0]
         cost_idx = peaks[1]
-    else:
+        rpe_idx = peaks[2]
+    elif len(peaks)==2 and np.mean(peaks)>len(prof)//2:
+        #the peaks are shifted outward, and IS/OS and COST might be
+        #usable
+        isos_idx = peaks[0]
+        cost_idx = peaks[1]
+        rpe_idx = None
+        plt.figure()
         plt.plot(z,prof)
         plt.plot(peaks,prof[peaks],'r^')
         plt.title('expected 3 peaks over %0.1f; found these'%peak_threshold)
-        plt.show()
-        sys.exit()
+        try:
+            os.mkdir('./project_cones_plots')
+        except:
+            pass
+        plt.savefig('./project_cones_plots/project_cones_peaks_partial_%s.png'%tag)
+    else:
+        isos_idx = None
+        cost_idx = None
+        rpe_idx = None
+        plt.figure()
+        plt.plot(z,prof)
+        plt.plot(peaks,prof[peaks],'r^')
+        plt.title('expected 3 peaks over %0.1f; found these'%peak_threshold)
+        try:
+            os.mkdir('./project_cones_plots')
+        except:
+            pass
+        plt.savefig('./project_cones_plots/project_cones_peaks_fail_%s.png'%tag)
 
-        
     relative_projection_half = (projection_depth-1)//2
-    isos = np.mean(flatvol[:,isos_idx-relative_projection_half:isos_idx+relative_projection_half+1,:],1)
     
-    cost = np.mean(flatvol[:,cost_idx-relative_projection_half:cost_idx+relative_projection_half+1,:],1)
+    try:
+        isos = np.mean(flatvol[:,isos_idx-relative_projection_half:isos_idx+relative_projection_half+1,:],1)
+    
+        cost = np.mean(flatvol[:,cost_idx-relative_projection_half:cost_idx+relative_projection_half+1,:],1)
+    except Exception as e:
+        print e
 
-    sisos_idx = (isos_idx+cost_idx)//2-2
-    sisos = np.mean(flatvol[:,sisos_idx-relative_projection_half:sisos_idx+relative_projection_half+1,:],1)
+    try:
+        sisos_idx = (isos_idx+cost_idx)//2-2
+        sisos = np.mean(flatvol[:,sisos_idx-relative_projection_half:sisos_idx+relative_projection_half+1,:],1)
+
+        srs = np.mean(flatvol[:,rpe_idx-relative_projection_half:rpe_idx+relative_projection_half+1,:],1)
+        rpe = np.mean(flatvol[:,rpe_idx:rpe_idx+2*relative_projection_half+1,:],1)
+    except Exception as e:
+        print e
+
+    
     
     if do_plot:
         plt.subplot(2,3,1)
@@ -303,7 +502,7 @@ def project_cones(vol,peak_threshold=500.0,projection_depth=5,do_plot=False):
         plt.imshow(sisos,cmap='gray')
         plt.pause(.0001)
         
-    return isos,sisos,cost
+    return isos,sisos,cost,srs,rpe
     
 def get(n):
     return sio.loadmat(flist[n])['Fvolume1']
@@ -325,6 +524,18 @@ def peak_com(vec,start,rad=0):
     x = x[left:right+1]
     subvec = vec.copy()[left:right+1]
     return np.sum(x*subvec)/np.sum(subvec)
+
+def get_desine_samples(deg1,deg2,n_pixels):
+    theta1 = deg1/180.0*np.pi
+    theta2 = deg2/180.0*np.pi
+    dtheta = (float(theta2)-float(theta1))/n_pixels
+    def func(x):
+        return np.round((np.arccos(1.0-2.0*x/n_pixels)-theta1)/dtheta).astype(np.int)
+
+    x = np.arange(0,n_pixels)
+    fx = func(x)
+
+    return fx[np.where(np.logical_and(fx>=0,fx<n_pixels))]
 
 def pearson(im1,im2):
     # normalize
@@ -356,13 +567,13 @@ def gaussian_mixture_fit(x,profile,elm,isos,cost,rpe):
     s3g = 5.0
     a3g = profile[rpe]-dcg
     guess = np.array([dcg,x0g,s0g,a0g,x1g,s1g,a1g,x2g,s2g,a2g,x3g,s3g,a3g])
-    popt,pvar = soo.curve_fit(four_gauss,x,profile,guess)
+    popt,pvar = spo.curve_fit(four_gauss,x,profile,guess)
     return popt
 
 def gauss(x,dc,x0,s,a):
     return dc+a*np.exp(-(x-x0)**2/(2*s**2))
 
-def gaussian_com(profile,center,rad,error_limit=5.0):
+def gaussian_com(profile,center,rad,error_limit=5.0,do_plot=True):
     dcg = np.median(profile)
     x0g = 0.0
     ag = profile[center]-dcg
@@ -371,13 +582,14 @@ def gaussian_com(profile,center,rad,error_limit=5.0):
     p = profile[center-rad:center+rad+1]
     x = np.arange(2*rad+1)-rad
     try:
-        popt,pvar = soo.curve_fit(gauss,x,p,guess)
+        popt,pvar = spo.curve_fit(gauss,x,p,guess)
         offset = popt[1]
     except Exception as e:
         offset = np.sum(p*x)/np.sum(p)
 
     if offset>error_limit:
         offset=0.0
+    print offset
     #pfit = gauss(x,*popt)
     #plt.plot(x,p,'ks')
     #plt.plot(x,pfit,'r--')
@@ -394,7 +606,7 @@ def strip_register(target,reference,oversample_factor,strip_width,do_plot=False,
     
     if do_plot:
         plt.figure(figsize=(24,12))
-    
+
     sy,sx = target.shape
     sy2,sx2 = reference.shape
     #ir_stack = np.zeros((sy,sy,sx))
@@ -542,9 +754,6 @@ def strip_register(target,reference,oversample_factor,strip_width,do_plot=False,
             plt.subplot(2,4,7)
             plt.cla()
             plt.imshow(ref,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-
-
-            
             plt.pause(.0001)
         
     if do_plot:

@@ -45,10 +45,11 @@ class Hive():
         if key[0]=='/':
             key = key[1:]
 
-        fn = os.path.join(self.root_location,key)+'.npy'
-
-        if os.path.exists(fn):
-            return np.load(fn)
+        
+        npy_fn = os.path.join(self.root_location,key)+'.npy'
+        if os.path.exists(npy_fn):
+            return np.load(npy_fn)
+        
         else:
             return Hive(os.path.join(self.root_location,key))
 
