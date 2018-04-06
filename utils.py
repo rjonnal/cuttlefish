@@ -2,6 +2,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import scipy.optimize as spo
 import scipy.signal as sps
+import scipy.ndimage as spn
 import sys,os
 
 
@@ -378,6 +379,62 @@ def model_segment_volume_slow(vol,model,label_dictionary,gaussian_sigma=0.0):
     return out_dict
     
 
+def find_cones(data,neighborhood_size,nstd=0.0,do_plot=False):
+    threshold = nstd*np.std(data)
+    
+    #neighborhood = morphology.generate_binary_structure(3,3)
+    #rad_ceil = np.ceil(neighborhood_radius)
+    
+    #XX,YY = np.meshgrid(np.arange(-rad_ceil,rad_ceil+1),np.arange(-rad_ceil,rad_ceil+1))
+    #d = np.sqrt(XX**2+YY**2)
+    #neighborhood = np.zeros(d.shape)
+
+    #neighborhood[np.where(d<=neighborhood_radius)] = 1.0
+
+    ymax,xmax = data.shape
+    ymax = ymax-1
+    xmax = xmax-1
+    
+    data_max = spn.filters.maximum_filter(data, neighborhood_size)
+    if do_plot:
+        clim = np.percentile(data,(5,99))
+        plt.figure()
+        plt.imshow(data,cmap='gray',interpolation='none',clim=clim)
+        plt.colorbar()
+        plt.figure()
+        plt.imshow(data_max,cmap='gray',interpolation='none',clim=clim)
+        plt.colorbar()
+        plt.figure()
+        plt.imshow(data_max-data,cmap='gray',interpolation='none',clim=clim)
+        plt.colorbar()
+    
+    maxima = (data == data_max)
+    data_min = spn.filters.minimum_filter(data, neighborhood_size)
+    diff = ((data_max - data_min) > threshold)
+    maxima[diff == 0] = 0
+
+    
+    labeled, num_objects = spn.label(maxima)
+    slices = spn.find_objects(labeled)
+    x, y = [], []
+    for dy,dx in slices:
+        x_center = (dx.start + dx.stop - 1)/2
+        x.append(x_center+1)
+        y_center = (dy.start + dy.stop - 1)/2    
+        y.append(y_center+1)
+
+    outcx,outcy = np.clip(np.array(x,dtype=np.float),0,xmax),np.clip(np.array(y,dtype=np.float),0,ymax)
+    outcx = outcx - 1
+    outcy = outcy - 1
+    if do_plot:
+        plt.figure()
+        plt.imshow(data,cmap='gray',interpolation='none',clim=clim)
+        plt.autoscale(False)
+        plt.plot(outcx,outcy,'y+')
+        plt.plot(outcx,outcy,'rs')
+
+    return outcx,outcy
+
 def project_cones(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''):
     # flatten a complex valued volume and project
     # the goal of this is to make volumes just flat enough
@@ -406,8 +463,6 @@ def project_cones(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''
         plt.show()
         sys.exit()
     # NEXT: FIND PEAKS, SEGMENT LAYERS, AND PROJECT
-
-
 
     isos = np.zeros((flatvol.shape[0],flatvol.shape[2]))
     sisos = np.zeros((flatvol.shape[0],flatvol.shape[2]))
