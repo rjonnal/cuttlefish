@@ -5,11 +5,6 @@ import scipy.signal as sps
 import scipy.ndimage as spn
 import sys,os
 
-def nanreplace(mat,replacement_value):
-    if replacement_value=='mean':
-        replacement_value = np.nanmean(mat)
-    mat[np.where(np.isnan(mat))] = replacement_value
-    return mat
 
 def nxcorr(vec1,vec2,do_plot=False):
     '''Given two vectors TARGET and REFERENCE, nxcorr(TARGET,REFERENCE)
@@ -619,24 +614,6 @@ def four_gauss(x,dc,x0,s0,a0,x1,s1,a1,x2,s2,a2,x3,s3,a3):
     sig3 = a3*np.exp(-(x-x3)**2/(2*s3**2))
     return dc+sig0+sig1+sig2+sig3
 
-def gaussian(x,dc,xmean,s,a):
-    sig = a*np.exp(-(x-xmean)**2/(2*s**2))+dc
-    return sig
-
-def gaussian_fit(x,y):
-    a0 = np.max(y)
-    dc0 = 0.0
-    fwhm_guess = float(len(np.where(y>y.max()/2.0)[0]))
-    # fwhm = 2.355 sigma
-    s0 = fwhm_guess/2.355
-    xmean0 = x[np.argmax(y)]
-    #plt.plot(x,y)
-    #plt.plot(x,gaussian(x,dc0,xmean0,s0,a0),'k--')
-    #plt.show()
-    guess = np.array([dc0,xmean0,s0,a0])
-    popt,pvar = spo.curve_fit(gaussian,x,y,guess)
-    return popt
-
 def gaussian_convolve(im,sigma,mode='same',hscale=1.0,vscale=1.0):
     if not sigma:
         return im
@@ -809,7 +786,7 @@ def strip_register(target,reference,oversample_factor,strip_width,do_plot=False,
 
 
         if refine:
-            refine_rad = oversample_factor*int(strip_width//2)
+            refine_rad = int(strip_width//2)
             refined_tar = np.zeros(tar.shape)
             refined_tar[iy,:] = tar[iy,:]
             refined_f0 = np.fft.fft2(refined_tar)
@@ -827,289 +804,16 @@ def strip_register(target,reference,oversample_factor,strip_width,do_plot=False,
 
             # choose the refined peak position if its value is almost as high (say
             # within 80%) of the coarse peak
-            if refined_centered_xc.max()>.8*centered_xc.max() or True:
+            if refined_centered_xc.max()>.8*centered_xc.max():
                 rcpeaky,rcpeakx = np.where(refined_centered_xc==np.max(refined_centered_xc))
 
                 rpeaky = float(rcpeaky[0])
                 rpeakx = float(rcpeakx[0])
                 rpeakx = rpeakx - Nx // 2
                 rpeaky = rpeaky - Ny // 2
-                peaky = float(rpeaky)/float(oversample_factor)
-                peakx = float(rpeakx)/float(oversample_factor)
+                rpeaky = rpeaky/oversample_factor
+                rpeakx = rpeakx/oversample_factor
                 goodness = refined_centered_xc.max()
-
-                if False:#(rcpeaky!=cpeaky or rcpeakx!=cpeakx):
-                    disp_factor = 1
-                    def norm(im):
-                        return (im-im.min())/(im.max()-im.min())
-                    plt.figure(figsize=(12,4))
-                    plt.subplot(1,3,1)
-                    plt.imshow(centered_xc)
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.subplot(1,3,2)
-                    plt.imshow(refined_centered_xc)
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.subplot(1,3,3)
-                    plt.imshow(norm(mask*centered_xc) - norm(refined_centered_xc),cmap='gray')
-                    plt.plot(cpeakx,cpeaky,'gs')
-                    plt.plot(rcpeakx,rcpeaky,'rs')
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.title(iy)
-                    plt.show()
-            
-
-            
-            # xl = (cpeakx-20,cpeakx+20)
-            # yl = (cpeaky-20,cpeaky+20)
-            # plt.figure()
-            # plt.imshow(refined_centered_xc,interpolation='none')
-            # plt.xlim(xl)
-            # plt.ylim(yl)
-            # plt.autoscale(False)
-            # plt.plot(rcpeakx,rcpeaky,'rs')
-            # plt.colorbar()
-            # plt.figure()
-            # plt.imshow(centered_xc,interpolation='none')
-            # plt.xlim(xl)
-            # plt.ylim(yl)
-            # plt.autoscale(False)
-            # plt.plot(cpeakx,cpeaky,'rs')
-            # plt.colorbar()
-            # plt.show()
-            # continue
-        
-        y_peaks.append(peaky)
-        x_peaks.append(peakx)
-        goodnesses.append(goodness)
-        half_window = 20
-        if do_plot:
-            plt.clf()
-
-            plt.subplot(2,4,1)
-            plt.cla()
-            plt.imshow(centered_xc,cmap='gray',interpolation='none')
-            plt.colorbar()
-            plt.subplot(2,4,2)
-            plt.cla()
-            plt.plot(x_peaks,label='x')
-            plt.plot(y_peaks,label='y')
-            plt.legend()
-            plt.title('lags')
-            
-            plt.subplot(2,4,3)
-            plt.cla()
-            plt.plot(goodnesses)
-            plt.title('goodness')
-            plt.subplot(2,4,4)
-            plt.cla()
-
-            clim = (np.min(centered_xc),np.max(centered_xc))
-            plt.imshow(centered_xc,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-            plt.xlim((cpeakx-half_window,cpeakx+half_window))
-            plt.ylim((cpeaky-half_window,cpeaky+half_window))
-            
-            #plt.imshow(centered_xc[peaky+Ny//2-half_window:peaky+Ny//2+half_window,peakx+Nx//2-half_window:peakx+Nx//2+half_window],cmap='gray',interpolation='none',aspect='auto')
-            #plt.colorbar()
-
-            clim = (tar.min(),tar.max())
-            plt.subplot(2,4,5)
-            plt.cla()
-            plt.imshow(tar,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-
-            plt.subplot(2,4,6)
-            plt.cla()
-            plt.imshow(temp_tar,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-
-            plt.subplot(2,4,7)
-            plt.cla()
-            plt.imshow(ref,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-            plt.pause(.0001)
-        
-    if do_plot:
-        plt.close()
-            
-    return y_peaks,x_peaks,goodnesses
-
-
-def graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=False,use_gaussian=True,background_diameter=0,refine=False):
-
-    # this function returns the x and y shifts required to align lines in TARGET
-    # to REFERENCE, such that xshift -1 and yshift +2 for a given line means that
-    # it must be moved left one pixel and down two pixels to match REFERENCE
-    
-    if do_plot:
-        plt.figure(figsize=(24,12))
-
-    sy,sx = target.shape
-    sy2,sx2 = reference.shape
-    #ir_stack = np.zeros((sy,sy,sx))
-
-    
-    assert sy==sy2 and sx==sx2
-
-    # wtf? Why did I have the abs in here originally?
-    # ref = np.abs((reference - np.mean(reference)))/np.std(reference)
-    # tar = np.abs((target - np.mean(target)))/np.std(target)
-                 
-    #ref = (reference - np.mean(reference))/np.std(reference)
-    #tar = (target - np.mean(target))/np.std(target)
-
-    ref = reference
-    tar = target
-
-    #ref = np.random.rand(ref.shape[0],ref.shape[1])
-    #tar = ref.copy()
-    
-    def show(im):
-        plt.figure()
-        plt.imshow(im,interpolation='none',cmap='gray')
-        plt.colorbar()
-
-    x_peaks = []
-    y_peaks = []
-    goodnesses = []
-    
-    f1 = np.fft.fft2(ref)
-    f1c = f1.conjugate()
-
-    Ny = sy*oversample_factor
-    Nx = sx*oversample_factor
-
-    ###ref_autocorr_max = np.max(np.abs(np.fft.ifft2(f1*f1c,s=(Ny,Nx))))
-    ref_autocorr_max = np.max(np.abs(np.fft.ifft2(f1*f1c)))
-    XX,YY = np.meshgrid(np.arange(Nx),np.arange(Ny))
-    
-    for iy in range(sy):
-
-        pct_done = round(float(iy)/float(sy)*100)
-        if pct_done%10==0:
-            print '%d percent done.'%pct_done
-        
-        # make a y coordinate vector centered about the
-        # region of interest
-        y = np.arange(sy)-float(iy)
-
-        if use_gaussian:
-            # use strip_width/2.0 for sigma (hence no 2x in denom of exponent)
-            g = np.exp((-y**2)/(float(strip_width)**2))#/np.sqrt(2*strip_width**2*np.pi)
-        else:
-            g = np.zeros(y.shape)
-            g[np.where(np.abs(y)<=strip_width/2.0)] = 1.0
-            #g[iy:iy+strip_width] = 1.0
-
-        temp_tar = (tar.T*g).T
-        factor = float(sy)/np.sum(g)
-
-        f0 = np.fft.fft2(temp_tar)
-        num = f0*f1c
-
-        # original:
-        #num = np.abs(np.fft.ifft2(num,s=(Ny,Nx)))
-
-        # fftshifted:
-        num = np.abs(np.fft.ifft2(np.fft.fftshift(num),s=(Ny,Nx)))
-
-        #num = (num-num.mean())/num.std()
-        
-        #tar_autocorr_max = np.max(np.abs(np.fft.ifft2(f0*f0.conjugate())))
-        #denom = np.sqrt(ref_autocorr_max)*np.sqrt(tar_autocorr_max)
-
-        xc = num#/denom
-        centered_xc = np.fft.fftshift(xc)
-        centered_xc = (centered_xc - centered_xc.mean())/centered_xc.std()
-        centered_xc = (centered_xc.T - np.mean(centered_xc,axis=1)).T
-
-        print centered_xc.shape
-        sys.exit()
-        
-        #centered_xc = centered_xc - centered_xc.min()
-
-        if background_diameter:
-            centered_xc = simple_background_subtract(centered_xc,background_diameter)
-        
-        xcmax = np.max(centered_xc)
-        xcmin = np.min(centered_xc)
-        xcstd = np.std(centered_xc)
-
-        cpeaky,cpeakx = np.where(centered_xc==np.max(centered_xc))
-
-        if not len(cpeaky):
-            peaky = 0
-            peakx = 0
-            goodness = 0
-        else:
-            goodness = centered_xc.max()
-            cpeaky = float(cpeaky[0])
-            cpeakx = float(cpeakx[0])
-            peakx = cpeakx
-            peaky = cpeaky
-            peakx = peakx - Nx // 2
-            peaky = peaky - Ny // 2
-            peaky = peaky/oversample_factor
-            peakx = peakx/oversample_factor
-
-
-        if refine:
-            refine_rad = oversample_factor*int(strip_width//2)
-            refined_tar = np.zeros(tar.shape)
-            refined_tar[iy,:] = tar[iy,:]
-            refined_f0 = np.fft.fft2(refined_tar)
-            refined_num = refined_f0*f1c
-            refined_xc = np.abs(np.fft.ifft2(np.fft.fftshift(refined_num),s=(Ny,Nx)))
-            #refined_xc = (refined_num-refined_num.mean())/refined_num.std()
-            refined_centered_xc = np.fft.fftshift(refined_xc)
-
-            refined_centered_xc = (refined_centered_xc-refined_centered_xc.mean())/refined_centered_xc.std()
-            refined_centered_xc = (refined_centered_xc.T - np.mean(refined_centered_xc,axis=1)).T
-            #refined_centered_xc = refined_centered_xc - refined_centered_xc.min()
-            mask = np.zeros(refined_centered_xc.shape)
-            mask[int(cpeaky)-refine_rad:int(cpeaky)+refine_rad+1,int(cpeakx)-refine_rad:int(cpeakx)+refine_rad+1] = 1
-            refined_centered_xc = refined_centered_xc * mask
-
-            # choose the refined peak position if its value is almost as high (say
-            # within 80%) of the coarse peak
-            if refined_centered_xc.max()>.8*centered_xc.max() or True:
-                rcpeaky,rcpeakx = np.where(refined_centered_xc==np.max(refined_centered_xc))
-
-                rpeaky = float(rcpeaky[0])
-                rpeakx = float(rcpeakx[0])
-                rpeakx = rpeakx - Nx // 2
-                rpeaky = rpeaky - Ny // 2
-                peaky = float(rpeaky)/float(oversample_factor)
-                peakx = float(rpeakx)/float(oversample_factor)
-                goodness = refined_centered_xc.max()
-
-                if False:#(rcpeaky!=cpeaky or rcpeakx!=cpeakx):
-                    disp_factor = 1
-                    def norm(im):
-                        return (im-im.min())/(im.max()-im.min())
-                    plt.figure(figsize=(12,4))
-                    plt.subplot(1,3,1)
-                    plt.imshow(centered_xc)
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.subplot(1,3,2)
-                    plt.imshow(refined_centered_xc)
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.subplot(1,3,3)
-                    plt.imshow(norm(mask*centered_xc) - norm(refined_centered_xc),cmap='gray')
-                    plt.plot(cpeakx,cpeaky,'gs')
-                    plt.plot(rcpeakx,rcpeaky,'rs')
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.title(iy)
-                    plt.show()
-            
 
             
             # xl = (cpeakx-20,cpeakx+20)

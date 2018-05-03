@@ -643,9 +643,8 @@ class Series:
         return '%s_%06d_%s'%(filename.replace(os.sep,'_'),volume_idx,'_'.join(layer_names))
         
     
-    def map_into_reference_space(self,filename,vidx,layer_names,goodness_threshold=-np.inf,oversampling_factor=1.0,oversampling_method='nearest'):
+    def map_into_reference_space(self,filename,vidx,layer_names,goodness_threshold=-np.inf,oversample_factor=1.0,oversample_method='nearest'):
         k = self.make_key(filename,vidx,layer_names)
-
         sign = -1
 
         target_hive = Hive(filename)
@@ -654,37 +653,39 @@ class Series:
         n_slow,n_depth,n_fast = target_data.shape
 
         goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
-        xshifts = oversampling_factor*sign*self.hive['/frames/%s/x_shifts'%k][:]
-        yshifts = oversampling_factor*sign*self.hive['/frames/%s/y_shifts'%k][:]+np.arange(n_slow)
+        xshifts = sign*self.hive['/frames/%s/x_shifts'%k][:]
+        yshifts = sign*self.hive['/frames/%s/y_shifts'%k][:]
 
         ref_space_x = self.hive['reference_position/x'][:]
         ref_space_y = self.hive['reference_position/y'][:]
         
-        out_vol = np.nan*np.ones((len(ref_space_y)+oversampling_factor,n_depth,len(ref_space_x)+oversampling_factor),dtype=np.complex64)
-        max_goodness = np.ones((len(ref_space_y)+oversampling_factor,len(ref_space_x)+oversampling_factor))*goodness_threshold
-        out_time = np.ones((len(ref_space_y)+oversampling_factor,len(ref_space_x)+oversampling_factor))*np.nan
+        out_vol = np.nan*np.ones((len(ref_space_y),n_depth,len(ref_space_x)),dtype=np.complex64)
+        max_goodness = np.ones((len(ref_space_y),len(ref_space_x)))*goodness_threshold
+        out_time = np.ones((len(ref_space_y),len(ref_space_x)))*np.nan
         
-        valid_idx = np.where(goodnesses>=goodness_threshold)[0]
-        for idx in valid_idx:
-            xs = xshifts[idx]
-            ys = yshifts[idx]
-            g = goodnesses[idx]
+        xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses,goodness_threshold,xmax=3,ymax=3,do_plot=False)
+
+        yshifts = yshifts + valid
+
+        for idx,xs,ys,g in zip(valid,xshifts,yshifts,goodnesses):
+            # xs is a non-oversampled (fractional pixel) vector
+            # ys is non-oversampled (fractional pixel) values, and
+            # also relative to idx right now
+
             xerr = np.abs(xs-ref_space_x)
             yerr = np.abs(ys-ref_space_y)
             put_x1 = np.argmin(xerr)
             put_y1 = np.argmin(yerr)
             
-            
             in_data0 = target_data[idx,:,:]
             in_time0 = target_data_time[idx,:]
-
             
-            for xo in range(oversampling_factor):
-                for yo in range(oversampling_factor):
+            for xo in range(oversample_factor):
+                for yo in range(oversample_factor):
                     in_data = in_data0.copy()
                     in_time = in_time0.copy()
-                    put_x = (np.arange(n_fast,dtype=np.integer)*oversampling_factor)+xo+put_x1
-                    put_y = idx+yo+put_y1
+                    put_x = (np.arange(n_fast,dtype=np.integer)*oversample_factor)+xo+put_x1
+                    put_y = yo+put_y1
 
                     while put_x.max()>=out_vol.shape[2]:
                         put_x=put_x[:-1]
@@ -702,7 +703,7 @@ class Series:
 
         return out_vol,out_time
 
-    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0):
+    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0,refine=False,graph=False):
         
         print 'Adding %s, volume %d.'%(filename,vidx)
         
@@ -720,8 +721,11 @@ class Series:
         self.db.put(self.key,filename,vidx)
 
         reference = self.reference
-        
-        y,x,g = utils.strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter)
+
+        if graph:
+            y,x,g = utils.graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter,refine=refine)
+        else:
+            y,x,g = utils.strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter,refine=refine)
 
         self.hive.put('/frames/%s/x_shifts'%self.key,x)
         self.hive.put('/frames/%s/y_shifts'%self.key,y)
@@ -865,7 +869,7 @@ class Series:
         plt.hist(all_goodnesses,500)
         plt.show()
     
-    def render(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,left_crop=0,right_crop=0):
+    def render(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,make_movie=False,left_crop=0,right_crop=0):
 
         keys = self.hive['frames'].keys()
         keys.sort()
@@ -896,10 +900,10 @@ class Series:
             xshifts = np.squeeze(xshifts)
             yshifts = np.squeeze(yshifts)
 
-            xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses)
+            xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses,goodness_threshold,xmax=3,ymax=3,do_plot=False)
 
-            use_for_limits = np.where(goodnesses>=goodness_threshold)[0]
             yshifts = yshifts + valid
+            
 
             #try:
             #    print k,np.min(xshifts[use_for_limits]),np.max(xshifts[use_for_limits])
@@ -907,10 +911,10 @@ class Series:
             #    print k,e
                 
             try:
-                newxmin = np.min(xshifts[use_for_limits])
-                newxmax = np.max(xshifts[use_for_limits])
-                newymin = np.min(yshifts[use_for_limits])
-                newymax = np.max(yshifts[use_for_limits])
+                newxmin = np.min(xshifts)
+                newxmax = np.max(xshifts)
+                newymin = np.min(yshifts)
+                newymax = np.max(yshifts)
 
                 xmin = min(xmin,newxmin)
                 xmax = max(xmax,newxmax)
@@ -930,12 +934,12 @@ class Series:
 
         canvas_width = xmax-xmin+n_fast
         canvas_height = ymax-ymin+10
-
+        
         ref_x1 = 0 - xmin
         ref_y1 = 0 - ymin
         ref_x2 = ref_x1 + n_fast
         ref_y2 = ref_y1 + n_slow
-
+        
         self.hive.put('/reference_coordinates/x1',ref_x1)
         self.hive.put('/reference_coordinates/x2',ref_x2)
         self.hive.put('/reference_coordinates/y1',ref_y1)
@@ -948,36 +952,39 @@ class Series:
             reg_dict[key] = (xs,ys,g,v)
                 
 
-        canvas_width = int((canvas_width+1)*oversample_factor)
-        canvas_height = int((canvas_height+1)*oversample_factor)
+        # just replaced (canvas_XXXXX+1) with canvas_XXXXX,
+        # assuming the reason I put +1 in before was to solve
+        # the truncation errors I created when I used int w/o round
+        canvas_width = int(round(canvas_width*oversample_factor))
+        canvas_height = int(round(canvas_height*oversample_factor))
 
         rmean = np.mean(self.reference)
 
-        embedded_reference = np.ones((canvas_height,canvas_width))*rmean
-        ref_x1 = int(ref_x1*oversample_factor)
-        ref_x2 = int(ref_x2*oversample_factor)
-        ref_y1 = int(ref_y1*oversample_factor)
-        ref_y2 = int(ref_y2*oversample_factor)
+        self.hive.put('/reference_position/y',np.arange(canvas_height,dtype=np.float)/float(oversample_factor)-ref_y1)
+        self.hive.put('/reference_position/x',np.arange(canvas_width,dtype=np.float)/float(oversample_factor)-ref_x1)
 
+        
+        embedded_reference = np.ones((canvas_height,canvas_width))*rmean
+        ref_x1 = int(round(ref_x1*oversample_factor))
+        ref_x2 = int(round(ref_x2*oversample_factor))
+        ref_y1 = int(round(ref_y1*oversample_factor))
+        ref_y2 = int(round(ref_y2*oversample_factor))
         reference = self.reference
         ref_oversampled = zoom(reference,oversample_factor)
-        
+
         embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
 
-        self.hive.put('/reference_position/y',np.arange(canvas_height)-ref_y1)
-        self.hive.put('/reference_position/x',np.arange(canvas_width)-ref_x1)
-        
 
+        
         sum_image = np.zeros((canvas_height,canvas_width))
         counter_image = np.zeros((canvas_height,canvas_width))
         correlation_image = np.zeros((canvas_height,canvas_width))
 
-
-        
         if do_plot:
-            mov = GIF('temp.gif',fps=5)
             dpi = 100.0
-            fig = plt.figure(figsize=(3*canvas_width/dpi,canvas_height/dpi))
+            if make_movie:
+                mov = GIF('temp.gif',fps=5,dpi=dpi)
+            fig = plt.figure(figsize=(3*canvas_width/dpi/2.0,canvas_height/dpi/2.0))
             ax1 = fig.add_axes([0,0,.3333,1])
             ax2 = fig.add_axes([.3333,0,.3333,1])
             ax3 = fig.add_axes([.6667,0,.3333,1])
@@ -993,15 +1000,14 @@ class Series:
             correlation_vector = np.zeros((n_slow))
             
             this_image = np.zeros((canvas_height,canvas_width))
+            this_counter = np.ones((canvas_height,canvas_width))*np.finfo(float).eps
             
             for idx,xs,ys,g in zip(indices,xshifts,yshifts,goodnesses):
-                if g<goodness_threshold:
-                    continue
-                line = im[idx,:]
+                line = im[idx,left_crop:]
                 line = np.expand_dims(line,0)
                 block = zoom(line,oversample_factor)
                 bsy,bsx = block.shape
-                x1 = int(np.round(xs*oversample_factor))
+                x1 = int(np.round((xs+left_crop)*oversample_factor))
                 x2 = x1 + bsx
                 y1 = int(np.round(ys*oversample_factor))
                 y2 = y1 + bsy
@@ -1022,10 +1028,15 @@ class Series:
                     #print 'block shape',block.shape
 
                     this_image[y1:y2,x1:x2] = this_image[y1:y2,x1:x2] + block
+                    this_counter[y1:y2,x1:x2] = this_counter[y1:y2,x1:x2] + 1.0
                     sum_image[y1:y2,x1:x2] = sum_image[y1:y2,x1:x2] + block
                     counter_image[y1:y2,x1:x2] = counter_image[y1:y2,x1:x2] + 1.0
-                    
-            #self.hive.put('/frames/%s/correlations'%k,correlation_vector)
+
+            this_image = this_image/this_counter
+            self.hive.put('/frames/%s/projections/%s'%(k,label),this_image)
+
+            
+            
             if do_plot:
 
                 try:
@@ -1037,7 +1048,7 @@ class Series:
 
                 ax1.clear()
                 ax1.imshow(this_image,cmap='gray',interpolation='none',clim=clim)
-                
+                ax1.text(0,0,'%s,%d'%(os.path.split(filename)[1],frame_index),ha='left',va='top',color='w',fontsize=9)
                 temp = counter_image.copy()
                 temp[np.where(temp==0)] = 1.0
                 av = sum_image/temp
@@ -1052,20 +1063,25 @@ class Series:
                 ax3.clear()
                 ax3.imshow(counter_image)
                 #plt.colorbar()
-                mov.add(fig)
+                if make_movie:
+                    mov.add(fig)
                 plt.pause(.001)
 
-        mov.make()
+        if make_movie:
+            mov.make()
+            
         temp = counter_image.copy()
         temp[np.where(temp==0)] = 1.0
         av = sum_image/temp
 
-        #cropper = self.get_cropper(counter_image)
-        cropper = lambda x: x
-        self.hive.put('/correlation_image/%s'%label,cropper(correlation_image))
-        self.hive.put('/counter_image/%s'%label,cropper(counter_image))
-        self.hive.put('/average_image/%s'%label,cropper(av))
-        self.hive.put('/sum_image/%s'%label,cropper(sum_image))
+        self.hive.put('/correlation_image/%s'%label,correlation_image)
+        self.hive.put('/counter_image/%s'%label,counter_image)
+        self.hive.put('/average_image/%s'%label,av)
+        self.hive.put('/sum_image/%s'%label,sum_image)
+
+        print counter_image.shape
+        print sum_image.shape
+        print av.shape
         
         if do_plot:
             plt.close()
@@ -1093,145 +1109,6 @@ class Series:
         x2 = valid_region_x[-1]
         return lambda x: x[y1:y2,x1:x2]
     
-    def render_stack(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,left_crop=0,right_crop=0):
-
-        files = self.hive['frames'].keys()
-
-        sign = -1
-        # remember the convention here: x and y shifts are the
-        # amount of shift required to align the line in question
-        # with the reference image
-        # first, find the minimum and maximum x and y shifts,
-        # in order to know how big the canvas must be for fitting
-        # all of the lines
-        xmin = np.inf
-        xmax = -np.inf
-        ymin = np.inf
-        ymax = -np.inf
-
-        reg_dict = {}
-
-        n_frames = 0
-        for filename in files:
-            keys = self.hive['/frames/%s'%filename].keys()
-            keys.sort()
-            for k in keys:
-                print k
-                test,label = self.get_image(filename,0,layer_names)
-                n_slow,n_fast = test.shape
-
-                goodnesses = self.hive['/frames/%s/%s/goodnesses'%k][:]
-                xshifts = sign*self.hive['/frames/%s/%s/x_shifts'%k][:]
-                yshifts = sign*self.hive['/frames/%s/%s/y_shifts'%k][:]
-
-                xshifts = np.squeeze(xshifts)
-                yshifts = np.squeeze(yshifts)
-                
-                xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses)
-
-                use_for_limits = np.where(goodnesses>=goodness_threshold)
-
-                try:
-                    newxmin = np.min(xshifts[use_for_limits])
-                    newxmax = np.max(xshifts[use_for_limits])
-                    newymin = np.min(yshifts[use_for_limits])
-                    newymax = np.max(yshifts[use_for_limits])
-                    
-                    xmin = min(xmin,newxmin)
-                    xmax = max(xmax,newxmax)
-                    ymin = min(ymin,newymin)
-                    ymax = max(ymax,newymax)
-                except Exception as e:
-                    print e
-
-                yshifts = yshifts + valid
-
-                reg_dict[k] = (xshifts,yshifts,goodnesses,valid)
-                n_frames = n_frames + 1
-
-        canvas_width = xmax-xmin+n_fast
-        canvas_height = ymax-ymin+n_slow
-        canvas_depth = n_frames
-
-        ref_x1 = 0 - xmin
-        ref_y1 = 0 - ymin
-        ref_x2 = ref_x1 + n_fast
-        ref_y2 = ref_y1 + n_slow
-        
-        self.hive.put('/reference_coordinates/x1',ref_x1)
-        self.hive.put('/reference_coordinates/x2',ref_x2)
-        self.hive.put('/reference_coordinates/y1',ref_y1)
-        self.hive.put('/reference_coordinates/y2',ref_y2)
-        
-        for key in reg_dict.keys():
-            xs,ys,g,v = reg_dict[key]
-            xs = xs - xmin
-            ys = ys - ymin
-            reg_dict[key] = (xs,ys,g,v)
-                
-
-        canvas_width = int(canvas_width*oversample_factor)
-        canvas_height = int((canvas_height+1)*oversample_factor)
-
-        rmean = np.mean(self.reference)
-
-        embedded_reference = np.ones((canvas_height,canvas_width))*rmean
-        ref_x1 = int(ref_x1*oversample_factor)
-        ref_x2 = int(ref_x2*oversample_factor)
-        ref_y1 = int(ref_y1*oversample_factor)
-        ref_y2 = int(ref_y2*oversample_factor)
-        ref_oversampled = zoom(self.reference,oversample_factor)
-        embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
-
-        rkeys = reg_dict.keys()
-        rkeys.sort()
-        for depth_idx in range(canvas_depth):
-            
-            frame = np.zeros((canvas_height,canvas_width))
-            counter = np.zeros((canvas_height,canvas_width))
-
-            k = rkeys[depth_idx]
-            xshifts,yshifts,goodnesses,indices = reg_dict[k]
-            filename = k[0]
-            frame_index = int(k[1])
-            im,label = self.get_image(filename,frame_index,layer_names)
-            correlation_vector = np.zeros((n_slow))
-            
-            for idx,xs,ys,g in zip(indices,xshifts,yshifts,goodnesses):
-                if g<goodness_threshold:
-                    continue
-                xs = xs + left_crop
-                line = im[idx,left_crop:-right_crop]
-                line = np.expand_dims(line,0)
-                block = zoom(line,oversample_factor)
-                bsy,bsx = block.shape
-                x1 = int(np.round(xs*oversample_factor))
-                x2 = x1 + bsx
-                y1 = int(np.round(ys*oversample_factor))
-                y2 = y1 + bsy
-
-                ref_section = embedded_reference[y1:y2,x1:x2]
-
-                while block.shape[1]>ref_section.shape[1]:
-                    block = block[:,:-1]
-
-                ref_section = ref_section.ravel()
-                
-                corr = np.corrcoef(ref_section,block.ravel())[1,0]
-                correlation_vector[idx] = corr
-                if corr>correlation_threshold:
-                    frame[y1:y2,x1:x2] = frame[y1:y2,x1:x2] + block
-                    counter[y1:y2,x1:x2] = counter[y1:y2,x1:x2] + 1.0
-
-            counter[np.where(counter==0)] = 1.0
-            frame = frame/counter
-            if do_plot:
-                plt.cla()
-                plt.imshow(frame,cmap='gray')
-                plt.pause(.0001)
-            self.hive.put('/frames/%s/%s/correlations'%(filename,k[1]),correlation_vector)
-            self.hive.put('/stack/%s/%06d'%(label,depth_idx),frame)
-
 
     def crop_stacks(self,label,dry_run=True,do_plot=False):
         """Using the stack labeled LABEL, crop all substacks
@@ -1362,234 +1239,57 @@ class Series:
         self.hive.put('/sum_image/%s'%label,sum_image)
         
             
-    def render_volume(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,left_crop=0,data_block='/flattened_data',offset_medfilt_kernel=9,layer_name='ISOS',align_bscan=False):
-
-        files = self.hive['frames'].keys()
-        print files
-        
-        sign = -1
-        # remember the convention here: x and y shifts are the
-        # amount of shift required to align the line in question
-        # with the reference image
-        # first, find the minimum and maximum x and y shifts,
-        # in order to know how big the canvas must be for fitting
-        # all of the lines
-        xmin = np.inf
-        xmax = -np.inf
-        ymin = np.inf
-        ymax = -np.inf
-        zmin = np.inf
-        zmax = -np.inf
-        max_depth = -np.inf
-
-        reg_dict = {}
-
-        def fix_corners(im):
-            fill_value = np.median(im)
-            to_check = np.zeros(im.shape)
-            rad = (offset_medfilt_kernel-1)//2
-            to_check[:rad,:rad] = 1
-            to_check[-rad:,:rad] = 1
-            to_check[:rad,-rad:] = 1
-            to_check[-rad:,-rad:] = 1
-            im[np.where(np.logical_and(to_check,1-im))] = fill_value
-            return im
-        
-        for filename in files:
-            keys = self.hive['/frames/%s'%filename].keys()
-            for k in keys:
-                test = self.get_volume(filename,int(k),data_block)
-                test = np.abs(test[:,:,left_crop:])
-                orig_vol_shape = test.shape
-                zshifts = self.get_z_offsets(filename,int(k),layer_name)[:,left_crop:]
-                zshifts = medfilt(zshifts,offset_medfilt_kernel)
-                zshifts = fix_corners(zshifts)
-                
-                n_slow,n_depth,n_fast = test.shape
-                if n_depth>max_depth:
-                    max_depth = n_depth
-                if False:
-                    for k in range(n_depth):
-                        im = test[:,k,:]
-                        plt.cla()
-                        plt.imshow(im,cmap='gray',interpolation='none',clim=np.percentile(test,(5,99.95)))
-                        plt.pause(.1)
-                    sys.exit()
-                
-                goodnesses = self.hive['/frames/%s/%s/goodnesses'%(filename,k)][:]
-                xshifts = sign*self.hive['/frames/%s/%s/x_shifts'%(filename,k)][:]
-                yshifts = sign*self.hive['/frames/%s/%s/y_shifts'%(filename,k)][:]
-
-                xshifts = np.squeeze(xshifts)
-                yshifts = np.squeeze(yshifts)
-
-                xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses)
-
-                zshifts = zshifts[valid,:]
-                
-                newxmin = np.min(xshifts)
-                newxmax = np.max(xshifts)
-                newymin = np.min(yshifts)
-                newymax = np.max(yshifts)
-                newzmin = np.min(zshifts)
-                newzmax = np.max(zshifts)
-
-                
-                xmin = min(xmin,newxmin)
-                xmax = max(xmax,newxmax)
-                ymin = min(ymin,newymin)
-                ymax = max(ymax,newymax)
-                zmin = min(zmin,newzmin)
-                zmax = max(zmax,newzmax)
-                yshifts = yshifts + valid
-
-                reg_dict[(filename,k)] = (xshifts,yshifts,zshifts,goodnesses,valid)
-
-        
-        canvas_width = int(xmax-xmin+n_fast)
-        canvas_height = int(ymax-ymin+n_slow)
-        canvas_depth = int(zmax-zmin+max_depth+1)
-        print 'canvas_depth start',canvas_depth
-        
-        ref_x1 = 0 - xmin
-        ref_y1 = 0 - ymin
-        ref_x2 = ref_x1 + n_fast
-        ref_y2 = ref_y1 + n_slow
-        
-        self.hive.put('/reference_coordinates/x1',ref_x1)
-        self.hive.put('/reference_coordinates/x2',ref_x2)
-        self.hive.put('/reference_coordinates/y1',ref_y1)
-        self.hive.put('/reference_coordinates/y2',ref_y2)
-        
-        for key in reg_dict.keys():
-            xs,ys,zs,g,v = reg_dict[key]
-            xs = xs - xmin
-            ys = ys - ymin
-            zs = zs - zmin
-            reg_dict[key] = (xs,ys,zs,g,v)
-
-        if False:
-            for key in reg_dict.keys():
-                plt.clf()
-                plt.imshow(reg_dict[key][2])
-                plt.colorbar()
-                plt.pause(1)
-            sys.exit()
             
-        canvas_width = canvas_width*oversample_factor
-        canvas_height = (canvas_height+1)*oversample_factor
-        canvas_depth0 = canvas_depth
-        canvas_depth = canvas_depth*oversample_factor
-        print 'canvas_depth oversampled',canvas_depth
-        sum_image = np.zeros((canvas_height,canvas_depth,canvas_width))
-        counter_image = np.ones((canvas_height,canvas_depth,canvas_width))*1e-10
+    def filter_registration(self,xshifts,yshifts,goodnesses,goodness_threshold,xmax=5,ymax=5,medfilt_region=29,do_plot=False):
 
-        errorcount = 0
-        for volume_count,k in enumerate(reg_dict.keys()):
-            xshifts,yshifts,zshifts,goodnesses,indices = reg_dict[k]
-            filename = k[0]
-            frame_index = int(k[1])
-            vol = np.abs(self.get_volume(filename,frame_index,data_block))[:,:,left_crop:]
-            
-            for bscan_count,(idx,xs,ys,zs,g) in enumerate(zip(indices,xshifts,yshifts,zshifts,goodnesses)):
-                bscan = vol[idx,:,:]
-                n_depth,n_fast = bscan.shape
-                shifted_bscan = np.zeros((canvas_depth0,n_fast))
-                print 'bscan shape',bscan.shape
-                print 'shifted_bscan shape',shifted_bscan.shape
-                print 'zs lims',zs.min(),zs.max()
-                print 'zmax',zmax
-                if align_bscan:
-                    for i_fast in range(n_fast):
-                        z1 = zmax-zs[i_fast]
-                        z2 = z1 + n_depth
-                        shifted_bscan[z1:z2,i_fast] = bscan[:,i_fast]
-                else:
-                    z1 = zmax - int(round(np.mean(zs)))
-                    z2 = z1 + n_depth
-                    cut_count = 0
-                    while z2>shifted_bscan.shape[0]:
-                        bscan = bscan[:-1,:]
-                        z2 = z2 - 1
-                        cut_count =+ 1
-                    if cut_count:
-                        print 'cut %d lines'%cut_count    
-                    shifted_bscan[int(z1):int(z2),:] = bscan
-                print
-
-                if False:
-                    plt.subplot(3,1,1)
-                    plt.imshow(bscan,interpolation='none',cmap='gray',aspect='normal')
-                    plt.subplot(3,1,2)
-                    plt.imshow(shifted_bscan,interpolation='none',cmap='gray',aspect='normal')
-                    plt.subplot(3,1,3)
-                    plt.plot(zs)
-                    plt.figure()
-                    plt.plot(np.mean(bscan,axis=1))
-                    plt.plot(np.mean(shifted_bscan,axis=1))
-                    plt.show()
-                    continue
-                
-                block = np.zeros((oversample_factor,canvas_depth,n_fast*oversample_factor))
-                shifted_bscan = zoom(shifted_bscan,oversample_factor)
-                
-                for ofk in range(oversample_factor):
-                    block[ofk,:,:] = shifted_bscan
-                bsy,bsz,bsx = block.shape
-                
-                x1 = int(np.round(xs*oversample_factor))
-                x2 = x1 + bsx
-                y1 = int(np.round(ys*oversample_factor))
-                y2 = y1 + bsy
-
-                try:
-                    sum_image[y1:y2,:,x1:x2] = sum_image[y1:y2,:,x1:x2] + block
-                    counter_image[y1:y2,:,x1:x2] = counter_image[y1:y2,:,x1:x2] + 1.0
-                except Exception as e:
-                    errorcount = errorcount + 1
-                    print e
-                print volume_count,bscan_count
-            if do_plot:
-                vav = sum_image[:,500:600,200]/counter_image[:,500:600,200]
-                hav = sum_image[200,500:600,:]/counter_image[200,500:600,:]
-                plt.clf()
-                plt.subplot(1,2,1)
-                plt.cla()
-                plt.imshow(vav.T,cmap='gray',interpolation='none',aspect='normal')
-                plt.colorbar()
-                plt.title(volume_count)
-                plt.subplot(1,2,2)
-                plt.cla()
-                plt.imshow(hav,cmap='gray',interpolation='none',aspect='normal')
-                plt.colorbar()
-                plt.pause(.0000000001)
-
-            
-        av = sum_image/counter_image
-        label = layer_name
-        self.hive.put('/counter_volume/%s'%label,counter_image)
-        self.hive.put('/average_volume/%s'%label,av)
-        self.hive.put('/sum_volume/%s'%label,sum_image)
-        print 'error count %d'%errorcount
-        if do_plot:
-            plt.close()
-            plt.subplot(1,2,1)
-            plt.cla()
-            plt.imshow(vav.T,cmap='gray',interpolation='none',aspect='normal')
-            plt.colorbar()
-            plt.title(volume_count)
-            plt.subplot(1,2,2)
-            plt.cla()
-            plt.imshow(hav,cmap='gray',interpolation='none',aspect='normal')
-            plt.colorbar()
-            plt.show()
-        
-            
-    def filter_registration(self,xshifts,yshifts,goodnesses,xmax=25,ymax=25,medfilt_region=49,do_plot=False):
         xmed = medfilt(xshifts,medfilt_region)
         ymed = medfilt(yshifts,medfilt_region)
         xerr = np.abs(xshifts-xmed)
         yerr = np.abs(yshifts-ymed)
+
+        xvalid = xerr<=xmax
+        yvalid = yerr<=ymax
+        gvalid = goodnesses>=goodness_threshold
+        valid = np.where(xvalid*yvalid*gvalid)[0]
+        
+#        if np.abs(xshifts[valid]-xshifts[valid].mean()).max()>10 or np.abs(yshifts[valid]-yshifts[valid].mean()).max()>10:
+#            do_plot = True
+        
+        #print '%d points: '%len(valid),valid
+        if do_plot:
+            plt.figure()
+            plt.subplot(4,1,1)
+            plt.plot(xshifts,'k-')
+            plt.plot(xmed,'k:')
+            plt.plot(yshifts,'r-')
+            plt.plot(ymed,'r:')
+            plt.xlim((0,len(xshifts)))
+
+            plt.subplot(4,1,2)
+            plt.plot(xerr,'k--')
+            plt.plot(yerr,'r--')
+            plt.xlim((0,len(xshifts)))
+            
+            plt.subplot(4,1,3)
+            plt.plot(valid,xshifts[valid],'ks')
+            plt.plot(valid,yshifts[valid],'ro')
+            plt.xlim((0,len(xshifts)))
+
+            plt.subplot(4,1,4)
+            plt.plot(valid,goodnesses[valid],'bs')
+            plt.xlim((0,len(xshifts)))
+
+            plt.show()
+
+        return xshifts[valid],yshifts[valid],goodnesses[valid],valid
+        
+        
+    def filter_registration_old(self,xshifts,yshifts,goodnesses,xmax=25,ymax=25,medfilt_region=49,do_plot=False):
+        xmed = medfilt(xshifts,medfilt_region)
+        ymed = medfilt(yshifts,medfilt_region)
+        xerr = np.abs(xshifts-xmed)
+        yerr = np.abs(yshifts-ymed)
+
         xvalid = xerr<=xmax
         yvalid = yerr<=ymax
 
