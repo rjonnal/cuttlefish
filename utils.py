@@ -984,6 +984,11 @@ def graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=
     ###ref_autocorr_max = np.max(np.abs(np.fft.ifft2(f1*f1c,s=(Ny,Nx))))
     ref_autocorr_max = np.max(np.abs(np.fft.ifft2(f1*f1c)))
     XX,YY = np.meshgrid(np.arange(Nx),np.arange(Ny))
+
+
+
+    nxc_stack = np.zeros((sy,Ny,Nx))
+    
     
     for iy in range(sy):
 
@@ -1025,160 +1030,111 @@ def graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=
         centered_xc = (centered_xc - centered_xc.mean())/centered_xc.std()
         centered_xc = (centered_xc.T - np.mean(centered_xc,axis=1)).T
 
-        print centered_xc.shape
-        sys.exit()
-        
-        #centered_xc = centered_xc - centered_xc.min()
 
-        if background_diameter:
-            centered_xc = simple_background_subtract(centered_xc,background_diameter)
+        nxc_stack[iy,:,:] = centered_xc
         
+        continue
         xcmax = np.max(centered_xc)
         xcmin = np.min(centered_xc)
         xcstd = np.std(centered_xc)
 
         cpeaky,cpeakx = np.where(centered_xc==np.max(centered_xc))
 
-        if not len(cpeaky):
-            peaky = 0
-            peakx = 0
-            goodness = 0
-        else:
-            goodness = centered_xc.max()
-            cpeaky = float(cpeaky[0])
-            cpeakx = float(cpeakx[0])
-            peakx = cpeakx
-            peaky = cpeaky
-            peakx = peakx - Nx // 2
-            peaky = peaky - Ny // 2
-            peaky = peaky/oversample_factor
-            peakx = peakx/oversample_factor
-
-
-        if refine:
-            refine_rad = oversample_factor*int(strip_width//2)
-            refined_tar = np.zeros(tar.shape)
-            refined_tar[iy,:] = tar[iy,:]
-            refined_f0 = np.fft.fft2(refined_tar)
-            refined_num = refined_f0*f1c
-            refined_xc = np.abs(np.fft.ifft2(np.fft.fftshift(refined_num),s=(Ny,Nx)))
-            #refined_xc = (refined_num-refined_num.mean())/refined_num.std()
-            refined_centered_xc = np.fft.fftshift(refined_xc)
-
-            refined_centered_xc = (refined_centered_xc-refined_centered_xc.mean())/refined_centered_xc.std()
-            refined_centered_xc = (refined_centered_xc.T - np.mean(refined_centered_xc,axis=1)).T
-            #refined_centered_xc = refined_centered_xc - refined_centered_xc.min()
-            mask = np.zeros(refined_centered_xc.shape)
-            mask[int(cpeaky)-refine_rad:int(cpeaky)+refine_rad+1,int(cpeakx)-refine_rad:int(cpeakx)+refine_rad+1] = 1
-            refined_centered_xc = refined_centered_xc * mask
-
-            # choose the refined peak position if its value is almost as high (say
-            # within 80%) of the coarse peak
-            if refined_centered_xc.max()>.8*centered_xc.max() or True:
-                rcpeaky,rcpeakx = np.where(refined_centered_xc==np.max(refined_centered_xc))
-
-                rpeaky = float(rcpeaky[0])
-                rpeakx = float(rcpeakx[0])
-                rpeakx = rpeakx - Nx // 2
-                rpeaky = rpeaky - Ny // 2
-                peaky = float(rpeaky)/float(oversample_factor)
-                peakx = float(rpeakx)/float(oversample_factor)
-                goodness = refined_centered_xc.max()
-
-                if False:#(rcpeaky!=cpeaky or rcpeakx!=cpeakx):
-                    disp_factor = 1
-                    def norm(im):
-                        return (im-im.min())/(im.max()-im.min())
-                    plt.figure(figsize=(12,4))
-                    plt.subplot(1,3,1)
-                    plt.imshow(centered_xc)
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.subplot(1,3,2)
-                    plt.imshow(refined_centered_xc)
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.subplot(1,3,3)
-                    plt.imshow(norm(mask*centered_xc) - norm(refined_centered_xc),cmap='gray')
-                    plt.plot(cpeakx,cpeaky,'gs')
-                    plt.plot(rcpeakx,rcpeaky,'rs')
-                    plt.colorbar()
-                    plt.xlim((cpeakx-refine_rad*disp_factor,cpeakx+refine_rad*disp_factor))
-                    plt.ylim((cpeaky-refine_rad*disp_factor,cpeaky+refine_rad*disp_factor))
-                    plt.title(iy)
-                    plt.show()
-            
-
-            
-            # xl = (cpeakx-20,cpeakx+20)
-            # yl = (cpeaky-20,cpeaky+20)
-            # plt.figure()
-            # plt.imshow(refined_centered_xc,interpolation='none')
-            # plt.xlim(xl)
-            # plt.ylim(yl)
-            # plt.autoscale(False)
-            # plt.plot(rcpeakx,rcpeaky,'rs')
-            # plt.colorbar()
-            # plt.figure()
-            # plt.imshow(centered_xc,interpolation='none')
-            # plt.xlim(xl)
-            # plt.ylim(yl)
-            # plt.autoscale(False)
-            # plt.plot(cpeakx,cpeaky,'rs')
-            # plt.colorbar()
-            # plt.show()
-            # continue
+        goodness = centered_xc.max()
+        cpeaky = float(cpeaky[0])
+        cpeakx = float(cpeakx[0])
+        peakx = cpeakx
+        peaky = cpeaky
+        peakx = peakx - Nx // 2
+        peaky = peaky - Ny // 2
+        peaky = peaky/oversample_factor
+        peakx = peakx/oversample_factor
         
         y_peaks.append(peaky)
         x_peaks.append(peakx)
-        goodnesses.append(goodness)
-        half_window = 20
-        if do_plot:
-            plt.clf()
 
-            plt.subplot(2,4,1)
-            plt.cla()
-            plt.imshow(centered_xc,cmap='gray',interpolation='none')
-            plt.colorbar()
-            plt.subplot(2,4,2)
-            plt.cla()
-            plt.plot(x_peaks,label='x')
-            plt.plot(y_peaks,label='y')
-            plt.legend()
-            plt.title('lags')
-            
-            plt.subplot(2,4,3)
-            plt.cla()
-            plt.plot(goodnesses)
-            plt.title('goodness')
-            plt.subplot(2,4,4)
-            plt.cla()
+    nxc_stack = nxc_stack**2
 
-            clim = (np.min(centered_xc),np.max(centered_xc))
-            plt.imshow(centered_xc,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-            plt.xlim((cpeakx-half_window,cpeakx+half_window))
-            plt.ylim((cpeaky-half_window,cpeaky+half_window))
-            
-            #plt.imshow(centered_xc[peaky+Ny//2-half_window:peaky+Ny//2+half_window,peakx+Nx//2-half_window:peakx+Nx//2+half_window],cmap='gray',interpolation='none',aspect='auto')
-            #plt.colorbar()
 
-            clim = (tar.min(),tar.max())
-            plt.subplot(2,4,5)
-            plt.cla()
-            plt.imshow(tar,cmap='gray',interpolation='none',aspect='auto',clim=clim)
 
-            plt.subplot(2,4,6)
-            plt.cla()
-            plt.imshow(temp_tar,cmap='gray',interpolation='none',aspect='auto',clim=clim)
+    # dead simple approach:
+    # find the brightest pixel in nxc_stack and
+    # cost function ourselves to the ends 0 and sy-1
+    pz0,py0,px0 = np.unravel_index(np.argmax(nxc_stack),nxc_stack.shape)
 
-            plt.subplot(2,4,7)
+    nsz,nsy,nsx = nxc_stack.shape
+    
+    def make_mask(sy,sx,cy,cx,rad):
+        XX,YY = np.meshgrid(np.arange(sx),np.arange(sy))
+        XX = XX-cx
+        YY = YY-cy
+        d = np.sqrt(XX**2+YY**2)
+        mask = np.zeros(d.shape)
+        mask[np.where(d<=rad)] = 1
+        return mask
+    
+    gcpeaky_vec = np.zeros((nsz))
+    gcpeakx_vec = np.zeros((nsz))
+    ggoodness_vec = np.zeros((nsz))
+
+    ggoodness_vec[pz0] = nxc_stack[pz0,py0,px0]
+    gcpeaky_vec[pz0] = py0
+    gcpeakx_vec[pz0] = px0
+    
+    py = py0
+    px = px0
+    zrange = range(pz0-1,-1,-1)+range(pz0+1,sy)
+    for z in zrange:
+        mask = make_mask(nsy,nsx,py,px,oversample_factor*2)
+        temp0 = nxc_stack[z,:,:]
+        temp = temp0*mask
+        py,px = np.unravel_index(np.argmax(temp),temp.shape)
+        if False:
+            plt.subplot(1,2,1)
             plt.cla()
-            plt.imshow(ref,cmap='gray',interpolation='none',aspect='auto',clim=clim)
-            plt.pause(.0001)
+            plt.imshow(mask)
+            plt.subplot(1,2,2)
+            plt.cla()
+            plt.imshow(temp0,cmap='gray',clim=(0.0,0.6))
+            plt.autoscale(False)
+            plt.plot(px,py,'rs',alpha=0.15,markersize=16,markerfacecolor=None)
+            plt.title(z)
+            plt.pause(.1)
+        ggoodness_vec[z] = temp[py,px]
+        gcpeaky_vec[z] = py
+        gcpeakx_vec[z] = px
+
+    corr_peaks = np.max(np.max(nxc_stack,axis=2),axis=1)
+    cpeaky_vec = []
+    cpeakx_vec = []
+    for idx,cp in enumerate(corr_peaks):
+        y,x = np.where(nxc_stack[idx,:,:]==cp)
+        try:
+            cpeaky_vec.append(y[0])
+            cpeakx_vec.append(x[0])
+        except Exception as e:
+            print e
+            cpeaky_vec.append(np.nan)
+            cpeakx_vec.append(np.nan)
+
+    # find flat regions of cpeaky_vec and cpeakx_vec,
+    # i.e. regions in which point to point differences
+    # are smaller than a given threshold
+    cpeakx_vec = np.array(cpeakx_vec)
+    cpeaky_vec = np.array(cpeaky_vec)
+
+    plt.subplot(2,1,1)
+    plt.plot(cpeakx_vec)
+    plt.plot(gcpeakx_vec)
+    #plt.plot(flat_indices,cpeakx_vec[flat_indices],'ro')
+    plt.plot(cpeaky_vec)
+    plt.plot(gcpeaky_vec)
+
+    #plt.plot(flat_indices,cpeaky_vec[flat_indices],'ro')
+    plt.subplot(2,1,2)
+    plt.plot(np.arange(sy),corr_peaks)
+    plt.plot(np.arange(sy),ggoodness_vec)
+
+    plt.show()
         
-    if do_plot:
-        plt.close()
-            
     return y_peaks,x_peaks,goodnesses
