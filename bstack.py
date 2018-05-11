@@ -62,7 +62,7 @@ class RegisteredAverage:
         """
         return [arr[:,x1:x2] for x1,x2 in zip(self.strip_starts,self.strip_ends)]
     
-    def add(self,target,do_plot=False):
+    def add(self,target,do_plot=False,correlation_threshold=-np.inf):
         """Add a target to this BStack. This method divides the target into
         this object's n_strips strips, and cross-correlates these strips with
         the reference image. It then puts the strips into this object's GrowableArray
@@ -71,7 +71,7 @@ class RegisteredAverage:
         tar = self.oversample(target)
         tars = self.make_strips(tar)
 
-        for tar,fref,offset in zip(tars,self.frefs,self.strip_starts):
+        for tar,ref,fref,offset in zip(tars,self.refs,self.frefs,self.strip_starts):
             ftar = np.conj(np.fft.fft2(tar))
             fprod = ftar*fref
             xc = np.abs(np.fft.ifft2(fprod))
@@ -80,6 +80,36 @@ class RegisteredAverage:
                 peaky=peaky-xc.shape[0]
             if peakx>xc.shape[1]//2:
                 peakx=peakx-xc.shape[1]
+
+            # if correlation threshold is set (i.e. if it's greater than -np.inf,
+            # then check aligned correlation; if fail, continue out of the loop
+            # iteration; if success, do nothing--loop will proceed to the fga.put call
+            if correlation_threshold>-np.inf:
+                sy,sx = tar.shape
+                # make length 2 arrays for x and y shifts, where the reference shifts
+                # (both 0) are the first items, and the target shifts (peakx and peaky)
+                # are the second, then subtract their minimum values to make all shifts
+                # positive while preserving relative correctness of target shifts
+                xshifts = np.array([0.0,peakx],dtype=np.integer)
+                yshifts = np.array([0.0,peaky],dtype=np.integer)
+                xshifts = xshifts-np.min(xshifts)
+                yshifts = yshifts-np.min(yshifts)
+                # compute dims of slightly expanded arrays and make arrays of
+                # zeros to hold the shifted ref and tar
+                esy = sy+int(round(yshifts.max()))
+                esx = sx+int(round(xshifts.max()))
+                eref = np.zeros((esy,esx))
+                etar = np.zeros((esy,esx))
+                # insert the shifted ref and tar at matching locations in
+                # expanded arrays:
+                eref[yshifts[0]:yshifts[0]+sy,xshifts[0]:xshifts[0]+sx] = ref
+                etar[yshifts[1]:yshifts[1]+sy,xshifts[1]:xshifts[1]+sx] = tar
+                # ravel and compute correlation between aligned arrays:
+                corr = np.corrcoef(np.array([etar.ravel(),eref.ravel()]))[0,1]
+
+                if corr<=correlation_threshold:
+                    print 'Skipping strip with correlation %0.3f.'%corr
+                    continue
 
             self.fga.put(tar,coords=(peaky,peakx+offset))
             
