@@ -38,7 +38,9 @@ class RegisteredAverage:
         self.fga = FlatGrowingArray()
         self.fga.put(self.ref,(0,0))
         self.t = 1 # where to insert the next strip
-
+        self.valid_strip_count = 0.0
+        self.total_strip_count = 0.0
+        
     def oversample(self,arr):
         """FFT-based oversampling. Uses this object's oversampling_factor to zero-pad
         the IFFT.
@@ -72,6 +74,7 @@ class RegisteredAverage:
         tars = self.make_strips(tar)
 
         for tar,ref,fref,offset in zip(tars,self.refs,self.frefs,self.strip_starts):
+            self.total_strip_count += 1.0
             ftar = np.conj(np.fft.fft2(tar))
             fprod = ftar*fref
             xc = np.abs(np.fft.ifft2(fprod))
@@ -108,23 +111,24 @@ class RegisteredAverage:
                 corr = np.corrcoef(np.array([etar.ravel(),eref.ravel()]))[0,1]
 
                 if corr<=correlation_threshold:
-                    print 'Skipping strip with correlation %0.3f.'%corr
+                    #print 'Skipping strip with correlation %0.3f.'%corr
                     continue
-
+            self.valid_strip_count = self.valid_strip_count + 1.0
             self.fga.put(tar,coords=(peaky,peakx+offset))
             
         self.t = self.t + 1
+        valid_fraction = self.valid_strip_count/self.total_strip_count
+        #print 'Valid strip fraction: %0.2f'%(valid_fraction)
 
         if do_plot:
             plt.cla()
             im = self.fga.get_average()
-            print im.shape
             im = utils.nanreplace(im,'mean')
             im = np.log(im)
             clim = np.percentile(im,(30,99.9))
             plt.imshow(im,clim=clim,cmap='gray',aspect='auto')
             #plt.ylim((920,700))
-            plt.title('t=%d'%self.t) 
+            plt.title('t=%d,valid=%0.2f'%(self.t,valid_fraction)) 
             plt.pause(.1)
 
 
