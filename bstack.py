@@ -6,7 +6,7 @@ import os,sys
 
 class RegisteredAverage:
 
-    def __init__(self,reference,oversampling_factor=1,n_strips=4):
+    def __init__(self,reference,oversampling_factor=1,n_strips=4,use_window_for_oversampling=False):
         """RegisteredAverage is a registered average of B-scan strips.
 
         Args:
@@ -17,6 +17,7 @@ class RegisteredAverage:
             n_sections (integer): the number of strips into which the inserted B-scans should
                 be cut before registering
         """
+        self.use_window_for_oversampling = use_window_for_oversampling
         rsy,rsx = reference.shape
         orsx=rsx*oversampling_factor
         if not orsx % n_strips == 0:
@@ -41,6 +42,7 @@ class RegisteredAverage:
         self.valid_strip_count = 0.0
         self.total_strip_count = 0.0
         
+        
     def oversample(self,arr):
         """FFT-based oversampling. Uses this object's oversampling_factor to zero-pad
         the IFFT.
@@ -55,7 +57,17 @@ class RegisteredAverage:
             return arr
         sy,sx = arr.shape
         osy,osx = sy*self.oversampling_factor,sx*self.oversampling_factor
-        return np.abs(np.fft.ifft2(np.fft.fftshift(np.fft.fft2(arr)),s=(osy,osx)))*self.oversampling_factor**2
+
+        f_arr = np.fft.fftshift(np.fft.fft2(arr))
+        
+        if self.use_window_for_oversampling:
+            win = np.hamming(sy)
+            f_arr = (f_arr.T*win).T
+
+        oversampled = np.abs(np.fft.ifft2(f_arr,s=(osy,osx)))*self.oversampling_factor**2
+        #oversampled = np.abs(np.fft.ifft2(np.fft.fftshift(np.fft.fft2(arr)),s=(osy,osx)))*self.oversampling_factor**2
+
+        return oversampled
 
 
     def make_strips(self,arr):
