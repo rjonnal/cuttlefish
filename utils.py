@@ -223,7 +223,7 @@ def bscan_coms(bscan):
     coms = np.sum(bscan*idx,axis=1)/np.sum(bscan,axis=1)
     return coms
 
-def flatten_volume(avol,order=2):
+def flatten_volume0(avol,order=2):
     sy,sz,sx = avol.shape
     fast_proj = avol.mean(axis=2).T
     fast_proj = fast_proj**2
@@ -249,6 +249,35 @@ def flatten_volume(avol,order=2):
         tempvol2[:,:sz-z1,x] = tempvol[:,z1:,x]
 
     return tempvol2
+
+
+def get_flat_offsets(avol,smoothing_sigma=1.0,model_radius=7):
+    sy,sz,sx = avol.shape
+    # transpose dimensions to permit fft2 and broadcasting
+    avol = np.transpose(avol,(1,0,2))
+
+    model = avol[:,sy//2-model_radius:sy//2+model_radius,sx//2-model_radius:sx//2+model_radius].mean(2).mean(1)
+    kernel = np.zeros((sy,sx))
+    XX,YY = np.meshgrid(np.arange(sx),np.arange(sy))
+    XX = XX - sx/2.0
+    YY = YY - sy/2.0
+    kernel = np.exp(-(XX**2+YY**2)/(2*smoothing_sigma**2))
+    kernel = kernel/np.sum(kernel)
+    savol = np.abs(np.fft.fftshift(np.fft.ifft2(np.fft.fft2(avol)*np.fft.fft2(kernel)),axes=(1,2)))
+
+    fmodel = np.fft.fft(model)
+    shifts = np.zeros((sy,sx),dtype=np.integer)
+    for y in range(sy):
+        for x in range(sx):
+            p = savol[:,y,x]
+            xc = np.abs(np.fft.ifft(np.conj(np.fft.fft(p))*fmodel))
+            shift = np.argmax(xc)
+            if shift>sz//2:
+                shift = shift-sz
+            shifts[y,x] = shift
+    #shifts = sps.medfilt(shifts,11)
+    shifts = shifts - np.min(shifts)
+    return shifts
 
 def flythrough(vol,start=0,end=None):
     plt.figure(figsize=(16,12))
@@ -447,7 +476,7 @@ def find_cones(data,neighborhood_size,nstd=0.0,do_plot=False):
 
     return outcx.astype(np.integer),outcy.astype(np.integer)
 
-def project_cones(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''):
+def project_cones0(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''):
     # flatten a complex valued volume and project
     # the goal of this is to make volumes just flat enough
     # for en face projection of cone mosaic
@@ -571,6 +600,124 @@ def project_cones(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''
         
     return isos,sisos,cost,srs,rpe
     
+def project_cones(vol,peak_threshold=0.5,projection_depth=5,do_plot=False,tag=''):
+    # flatten a complex valued volume and project
+    # the goal of this is to make volumes just flat enough
+    # for en face projection of cone mosaic
+    avol = np.abs(vol)
+
+    flatvol = flatten_volume(avol)
+
+    if False:
+        plt.subplot(2,2,1)
+        plt.imshow(np.mean(avol,2))
+        plt.subplot(2,2,2)
+        plt.imshow(np.mean(flatvol,2))
+        plt.subplot(2,2,3)
+        plt.semilogy(np.mean(np.mean(avol,2),0))
+        plt.ylim((100,1100))
+        plt.subplot(2,2,4)
+        plt.semilogy(np.mean(np.mean(flatvol,2),0))
+        plt.ylim((100,1100))
+        plt.show()
+        sys.exit()
+    # NEXT: FIND PEAKS, SEGMENT LAYERS, AND PROJECT
+
+    isos = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    sisos = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    cost = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    srs = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+    rpe = np.zeros((flatvol.shape[0],flatvol.shape[2]))
+
+    prof = flatvol[20:-20,:,10:-10].mean(2).mean(0)
+    z = np.arange(len(prof))
+    peaks = find_peaks(prof)
+    peak_threshold = peak_threshold*np.max(prof)
+    peaks = peaks[np.where(prof[peaks]>peak_threshold)]
+
+    
+    if len(peaks)==3:
+        # expected case:
+        isos_idx = peaks[0]
+        cost_idx = peaks[1]
+        rpe_idx = peaks[2]
+    elif len(peaks)==2 and np.mean(peaks)>len(prof)//2:
+        #the peaks are shifted outward, and IS/OS and COST might be
+        #usable
+        isos_idx = peaks[0]
+        cost_idx = peaks[1]
+        rpe_idx = None
+        plt.figure()
+        plt.plot(z,prof)
+        plt.plot(peaks,prof[peaks],'r^')
+        plt.title('expected 3 peaks over %0.1f; found these'%peak_threshold)
+        try:
+            os.mkdir('./project_cones_plots')
+        except:
+            pass
+        plt.savefig('./project_cones_plots/project_cones_peaks_partial_%s.png'%tag)
+    else:
+        isos_idx = None
+        cost_idx = None
+        rpe_idx = None
+        plt.figure()
+        plt.plot(z,prof)
+        plt.plot(peaks,prof[peaks],'r^')
+        plt.title('expected 3 peaks over %0.1f; found these'%peak_threshold)
+        try:
+            os.mkdir('./project_cones_plots')
+        except:
+            pass
+        plt.savefig('./project_cones_plots/project_cones_peaks_fail_%s.png'%tag)
+
+    relative_projection_half = (projection_depth-1)//2
+    
+    try:
+        isos = np.mean(flatvol[:,isos_idx-relative_projection_half:isos_idx+relative_projection_half+1,:],1)
+    
+        cost = np.mean(flatvol[:,cost_idx-relative_projection_half:cost_idx+relative_projection_half+1,:],1)
+    except Exception as e:
+        print e
+
+    try:
+        sisos_idx = (isos_idx+cost_idx)//2-2
+        sisos = np.mean(flatvol[:,sisos_idx-relative_projection_half:sisos_idx+relative_projection_half+1,:],1)
+
+        srs = np.mean(flatvol[:,rpe_idx-relative_projection_half:rpe_idx+relative_projection_half+1,:],1)
+        rpe = np.mean(flatvol[:,rpe_idx:rpe_idx+2*relative_projection_half+1,:],1)
+    except Exception as e:
+        print e
+
+    
+    
+    if do_plot:
+        plt.subplot(2,3,1)
+        plt.cla()
+        plt.plot(prof)
+        plt.axvspan(isos_idx-relative_projection_half,isos_idx+relative_projection_half,alpha=0.5,color='g')
+        plt.axvspan(cost_idx-relative_projection_half,cost_idx+relative_projection_half,alpha=0.5,color='b')
+        #plt.subplot(2,3,2)
+        plt.axes([.33,.5,.67,.5])
+        plt.cla()
+        plt.imshow(np.mean(flatvol,axis=0),cmap='gray',aspect='auto')
+        plt.axhspan(isos_idx-relative_projection_half,isos_idx+relative_projection_half,alpha=0.5,color='g')
+        plt.axhspan(cost_idx-relative_projection_half,cost_idx+relative_projection_half,alpha=0.5,color='b')
+
+        plt.subplot(2,3,4)
+        plt.cla()
+        plt.imshow(isos,cmap='gray')
+
+        plt.subplot(2,3,5)
+        plt.cla()
+        plt.imshow(cost,cmap='gray')
+
+        plt.subplot(2,3,6)
+        plt.cla()
+        plt.imshow(sisos,cmap='gray')
+        plt.pause(.0001)
+        
+    return isos,sisos,cost,srs,rpe
+
 def get(n):
     return sio.loadmat(flist[n])['Fvolume1']
 
