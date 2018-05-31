@@ -1209,6 +1209,14 @@ def graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=
     # cost function ourselves to the ends 0 and sy-1
     pz0,py0,px0 = np.unravel_index(np.argmax(nxc_stack),nxc_stack.shape)
 
+    for z in range(sy):
+        plt.clf()
+        plt.imshow(nxc_stack[z,:,:],clim=(0,1))
+        plt.colorbar()
+        plt.pause(.1)
+    sys.exit()
+
+    
     nsz,nsy,nsx = nxc_stack.shape
     
     def make_mask(sy,sx,cy,cx,rad):
