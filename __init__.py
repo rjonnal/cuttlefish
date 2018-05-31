@@ -7,4 +7,4 @@ from hive import *
 from utils import *
 from series import Series
 from growing_array import GrowingArray,FlatGrowingArray
-from bstack import BStack,RegisteredAverage
+from bstack import *

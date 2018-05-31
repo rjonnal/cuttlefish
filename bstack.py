@@ -6,7 +6,7 @@ import os,sys
 
 class RegisteredAverage:
 
-    def __init__(self,reference,oversampling_factor=1,n_strips=4,use_window_for_oversampling=False):
+    def __init__(self,reference,oversampling_factor=(1,1),n_strips=4,use_window_for_oversampling=False):
         """RegisteredAverage is a registered average of B-scan strips.
 
         Args:
@@ -19,7 +19,7 @@ class RegisteredAverage:
         """
         self.use_window_for_oversampling = use_window_for_oversampling
         rsy,rsx = reference.shape
-        orsx=rsx*oversampling_factor
+        orsx=rsx*oversampling_factor[1]
         if not orsx % n_strips == 0:
             sys.exit('Oversampled width %d fails to evenly divide into %d strips. Please modify parameters or crop reference image accordingly.'%(orsx,n_strips))
         else:
@@ -53,10 +53,10 @@ class RegisteredAverage:
         Returns:
             the oversampled image
         """
-        if self.oversampling_factor==1:
+        if self.oversampling_factor==(1,1):
             return arr
         sy,sx = arr.shape
-        osy,osx = sy*self.oversampling_factor,sx*self.oversampling_factor
+        osy,osx = sy*self.oversampling_factor[0],sx*self.oversampling_factor[1]
 
         f_arr = np.fft.fftshift(np.fft.fft2(arr))
         
@@ -64,7 +64,7 @@ class RegisteredAverage:
             win = np.hamming(sy)
             f_arr = (f_arr.T*win).T
 
-        oversampled = np.abs(np.fft.ifft2(f_arr,s=(osy,osx)))*self.oversampling_factor**2
+        oversampled = np.abs(np.fft.ifft2(f_arr,s=(osy,osx)))*np.prod(self.oversampling_factor)
         #oversampled = np.abs(np.fft.ifft2(np.fft.fftshift(np.fft.fft2(arr)),s=(osy,osx)))*self.oversampling_factor**2
 
         return oversampled
@@ -137,14 +137,14 @@ class RegisteredAverage:
             im = self.fga.get_average()
             im = utils.nanreplace(im,'mean')
             im = np.log(im)
-            clim = np.percentile(im,(30,99.9))
+            clim = np.percentile(im,(40,99.9))
             plt.imshow(im,clim=clim,cmap='gray',aspect='auto')
             #plt.ylim((920,700))
             plt.title('t=%d,valid=%0.2f'%(self.t,valid_fraction)) 
-            plt.pause(.1)
+            plt.pause(.5)
 
 
-class BStack:
+class BStackDepricated:
 
     def __init__(self,reference,oversampling_factor=1,n_strips=4):
         """BStack is a registered stack of B-scan strips.
