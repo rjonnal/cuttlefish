@@ -703,7 +703,7 @@ class Series:
 
         return out_vol,out_time
 
-    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0,refine=False,graph=False):
+    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0,refine=False,graph=False,left_crop=None,right_crop=None):
         
         print 'Adding %s, volume %d.'%(filename,vidx)
         
@@ -718,10 +718,20 @@ class Series:
 
         
         target,label = self.get_image(filename,vidx,layer_names)
-        self.db.put(self.key,filename,vidx)
+
+        # move this to the end to prevent degenerate database entries if
+        # the registration process is stopped
+        #self.db.put(self.key,filename,vidx)
 
         reference = self.reference
 
+        if not left_crop is None:
+            target = target[:,left_crop:]
+            reference = reference[:,left_crop:]
+        if not right_crop is None:
+            target = target[:,:-right_crop]
+            reference = reference[:,:-right_crop]
+        
         if graph:
             y,x,g = utils.graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter,refine=refine)
         else:
@@ -732,7 +742,9 @@ class Series:
         self.hive.put('/frames/%s/goodnesses'%self.key,g)
         self.hive.put('/frames/%s/reference'%self.key,[0])
         self.hive.put('/frames/%s/oversample_factor'%self.key,oversample_factor)
+        self.db.put(self.key,filename,vidx)
 
+        
     def get_image(self,filename,vidx,layer_names):
         
         target_hive = Hive(filename)
@@ -858,15 +870,19 @@ class Series:
 
         return out
 
-    def goodness_histogram(self):
+    def goodness_histogram(self,goodness_threshold=None):
         all_goodnesses = []
         keys = self.db.dictionary.keys()
+        keys.sort()
         for k in keys:
             gfn = os.path.join(os.path.join(os.path.join(self.series_directory,'frames'),k),'goodnesses.npy')
+            #filt_string = os.path.join(os.path.join(self.series_directory,'frames/%s/*'%k))
             goodnesses = list(np.load(gfn))
             all_goodnesses = all_goodnesses + goodnesses
 
         plt.hist(all_goodnesses,500)
+        if not goodness_threshold is None:
+            plt.axvline(goodness_threshold)
         plt.show()
     
     def render(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,make_movie=False,left_crop=0,right_crop=0):
@@ -887,7 +903,7 @@ class Series:
         ymax = -np.inf
 
         reg_dict = {}
-        
+
         for k_idx,k in enumerate(keys):
             filename,vidx = self.db.get(k)
             test,label = self.get_image(filename,0,layer_names)
@@ -932,14 +948,18 @@ class Series:
 
             reg_dict[k] = (xshifts,yshifts,goodnesses,valid)
 
+            
         canvas_width = xmax-xmin+n_fast
+        #canvas_width = xmax-xmin+n_fast-left_crop-right_crop
         canvas_height = ymax-ymin+10
         
         ref_x1 = 0 - xmin
         ref_y1 = 0 - ymin
         ref_x2 = ref_x1 + n_fast
+        #ref_x2 = ref_x1 + n_fast - left_crop - right_crop
         ref_y2 = ref_y1 + n_slow
-        
+
+
         self.hive.put('/reference_coordinates/x1',ref_x1)
         self.hive.put('/reference_coordinates/x2',ref_x2)
         self.hive.put('/reference_coordinates/y1',ref_y1)
@@ -964,17 +984,16 @@ class Series:
         self.hive.put('/reference_position/x',np.arange(canvas_width,dtype=np.float)/float(oversample_factor)-ref_x1)
 
         
-        embedded_reference = np.ones((canvas_height,canvas_width))*rmean
+        #embedded_reference = np.ones((canvas_height,canvas_width))*rmean
         ref_x1 = int(round(ref_x1*oversample_factor))
         ref_x2 = int(round(ref_x2*oversample_factor))
         ref_y1 = int(round(ref_y1*oversample_factor))
         ref_y2 = int(round(ref_y2*oversample_factor))
         reference = self.reference
+
         ref_oversampled = zoom(reference,oversample_factor)
 
-        embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
-
-
+        #embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
         
         sum_image = np.zeros((canvas_height,canvas_width))
         counter_image = np.zeros((canvas_height,canvas_width))
@@ -1003,11 +1022,27 @@ class Series:
             this_counter = np.ones((canvas_height,canvas_width))*np.finfo(float).eps
             
             for idx,xs,ys,g in zip(indices,xshifts,yshifts,goodnesses):
-                line = im[idx,left_crop:]
+                
+                #line = im[idx,left_crop:-right_crop]
+
+                line = im[idx,:]
+                if not left_crop is None:
+                    line = line[left_crop:]
+                
+                if not right_crop is None:
+                    line = line[:-right_crop]
+
+
+
                 line = np.expand_dims(line,0)
                 block = zoom(line,oversample_factor)
                 bsy,bsx = block.shape
-                x1 = int(np.round((xs+left_crop)*oversample_factor))
+
+                if not left_crop is None:
+                    x1 = int(np.round((xs+left_crop)*oversample_factor))
+                else:
+                    x1 = int(np.round(xs*oversample_factor))
+                
                 x2 = x1 + bsx
                 y1 = int(np.round(ys*oversample_factor))
                 y2 = y1 + bsy

@@ -87,7 +87,7 @@ def dispersion_ui(raw_data,func,c3min=c3min,c3max=c3max,c2min=c2min,c2max=c2max)
         for xnewclick,ynewclick in click_points:
             points.append((xnewclick,ynewclick))
 
-            im = np.abs(func(raw_data,ynewclick,xnewclick))[:950,:]
+            im = np.abs(func(raw_data,ynewclick,xnewclick))
             # get the max value before scaling
             imax = max(im)
             imaxes.append(imax)

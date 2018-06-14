@@ -853,7 +853,7 @@ def strip_register(target,reference,oversample_factor,strip_width,do_plot=False,
     sy,sx = target.shape
     sy2,sx2 = reference.shape
     #ir_stack = np.zeros((sy,sy,sx))
-    
+
     assert sy==sy2 and sx==sx2
 
     # wtf? Why did I have the abs in here originally?
