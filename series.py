@@ -807,12 +807,27 @@ class Series:
             sys.exit()
         return counter
                 
-        
-    def get_volume(self,filename_stub,vidx,data_block):
-        filename = os.path.join(self.working_directory,filename_stub)
-        target_h5 = H5(filename)
-        return target_h5[data_block][vidx,:,:,:]
+    def get_volume(self,filename,vidx,data_block):
+        target_hive = Hive(filename)
+        return target_hive[data_block][vidx,:,:,:]
 
+    def get_flat_offsets(self,filename,vidx):
+        target_hive = Hive(filename)
+        return target_hive['flat_offsets'][vidx,:,:]
+
+
+    def get_model_and_labels(self,filename,vidx):
+        target_hive = Hive(filename)
+        model_profile = target_hive['model/profiles'][vidx]
+        label_dict = {}
+        filt_str = '%s/model/labels/*.npy'%filename
+        label_files = glob.glob(os.path.join(filt_str))
+        for f in label_files:
+            key = os.path.split(f)[1].replace('.npy','')
+            val = np.load(f)[vidx]
+            label_dict[key] = val
+        return model_profile,label_dict
+    
     def get_z_offsets(self,filename_stub,vidx,layer_name=None):
         filename = os.path.join(self.working_directory,filename_stub)
         target_h5 = H5(filename)
@@ -906,6 +921,7 @@ class Series:
 
         for k_idx,k in enumerate(keys):
             filename,vidx = self.db.get(k)
+
             test,label = self.get_image(filename,0,layer_names)
 
             n_slow,n_fast = test.shape
@@ -983,18 +999,12 @@ class Series:
         self.hive.put('/reference_position/y',np.arange(canvas_height,dtype=np.float)/float(oversample_factor)-ref_y1)
         self.hive.put('/reference_position/x',np.arange(canvas_width,dtype=np.float)/float(oversample_factor)-ref_x1)
 
-        
-        #embedded_reference = np.ones((canvas_height,canvas_width))*rmean
         ref_x1 = int(round(ref_x1*oversample_factor))
         ref_x2 = int(round(ref_x2*oversample_factor))
         ref_y1 = int(round(ref_y1*oversample_factor))
         ref_y2 = int(round(ref_y2*oversample_factor))
         reference = self.reference
 
-        ref_oversampled = zoom(reference,oversample_factor)
-
-        #embedded_reference[ref_y1:ref_y2,ref_x1:ref_x2] = ref_oversampled
-        
         sum_image = np.zeros((canvas_height,canvas_width))
         counter_image = np.zeros((canvas_height,canvas_width))
         correlation_image = np.zeros((canvas_height,canvas_width))
@@ -1359,6 +1369,258 @@ class Series:
             plt.title(k)
             plt.pause(.1)
         plt.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
+    def render_volume(self,goodness_threshold=0.0,overwrite=False,oversample_factor=3,do_plot=False,make_movie=False,left_crop=0,right_crop=0):
+
+        keys = self.hive['frames'].keys()
+        keys.sort()
+        
+        sign = -1
+        # remember the convention here: x and y shifts are the
+        # amount of shift required to align the line in question
+        # with the reference image
+        # first, find the minimum and maximum x and y shifts,
+        # in order to know how big the canvas must be for fitting
+        # all of the lines
+        xmin = np.inf
+        xmax = -np.inf
+        ymin = np.inf
+        ymax = -np.inf
+        zmin = np.inf
+        zmax = -np.inf
+
+        reg_dict = {}
+
+        test_fn,vidx = self.db.get(keys[0])
+        avol = np.abs(self.get_volume(test_fn,vidx,'processed_data'))
+        n_slow,n_depth,n_fast = avol.shape
+        
+        for k_idx,k in enumerate(keys):
+            filename,vidx = self.db.get(k)
+
+            #avol = np.abs(self.get_volume(filename,vidx,'processed_data'))
+            #n_slow,n_depth,n_fast = avol.shape
+            
+            # attempt to filter the flat offsets below doesn't work because
+            # median filtering causes problems at corners
+            
+            #flat_offsets = np.round(medfilt(flat_offsets0,[11,11])).astype(np.integer)
+            #invalid = np.where(flat_offsets==0)
+            #flat_offsets[invalid] = flat_offsets0[invalid]
+            # we have to register a flattened volume with the model in order to
+            # to know how to align all of the flattened volumes with one another
+            
+            # flattened_avol = np.zeros((n_slow,n_depth+flat_offsets.max(),n_fast))
+            # for y in range(n_slow):
+            #     for x in range(n_fast):
+            #         flattened_avol[y,flat_offsets[y,x]:flat_offsets[y,x]+n_depth,x] = avol[y,:,x]
+
+            # avol = flattened_avol
+            # del flattened_avol
+
+            # test = avol.mean(2).mean(0)
+            # if False:
+            #     plt.plot(test)
+            #     plt.plot(model_profile)
+            #     plt.autoscale(False)
+            #     for lab in labels.keys():
+            #         pos = labels[lab]
+            #         plt.text(pos,model_profile[pos],lab,ha='center',va='bottom')
+            #     plt.show()
+            #     sys.exit()
+
+            goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
+            xshifts = sign*self.hive['/frames/%s/x_shifts'%k][:]
+            yshifts = sign*self.hive['/frames/%s/y_shifts'%k][:]
+
+            xshifts = np.squeeze(xshifts)
+            yshifts = np.squeeze(yshifts)
+
+            xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses,goodness_threshold,xmax=3,ymax=3,do_plot=False)
+
+            yshifts = yshifts + valid
+            
+
+            try:
+                newxmin = np.min(xshifts)
+                newxmax = np.max(xshifts)
+                newymin = np.min(yshifts)
+                newymax = np.max(yshifts)
+
+                xmin = min(xmin,newxmin)
+                xmax = max(xmax,newxmax)
+                ymin = min(ymin,newymin)
+                ymax = max(ymax,newymax)
+            except Exception as e:
+                print e
+
+            reg_dict[k] = (xshifts,yshifts,goodnesses,valid)
+
+            
+        canvas_width = xmax-xmin+n_fast
+        canvas_height = ymax-ymin+10
+
+
+        # Here we need to decide the depth of the rendered volume.
+        # Part of the consideration is the layer to which everything
+        # is to be flattened.
+        # As a first try we'll flatten to the IS/OS.
+        # In this data, 100 pixels centered about IS/OS takes us from the ONL
+        # to the choroid which is more than sufficient.
+
+         
+        canvas_depth = 100
+        
+        ref_x1 = 0 - xmin
+        ref_y1 = 0 - ymin
+        ref_x2 = ref_x1 + n_fast
+        ref_y2 = ref_y1 + n_slow
+
+        self.hive.put('/reference_coordinates/x1',ref_x1)
+        self.hive.put('/reference_coordinates/x2',ref_x2)
+        self.hive.put('/reference_coordinates/y1',ref_y1)
+        self.hive.put('/reference_coordinates/y2',ref_y2)
+
+        for key in reg_dict.keys():
+            xs,ys,g,v = reg_dict[key]
+            xs = xs - xmin
+            ys = ys - ymin
+            reg_dict[key] = (xs,ys,g,v)
+                
+
+        # just replaced (canvas_XXXXX+1) with canvas_XXXXX,
+        # assuming the reason I put +1 in before was to solve
+        # the truncation errors I created when I used int w/o round
+        canvas_width = int(round(canvas_width*oversample_factor))
+        canvas_height = int(round(canvas_height*oversample_factor))
+
+        rmean = np.mean(self.reference)
+
+        self.hive.put('/reference_position/y',np.arange(canvas_height,dtype=np.float)/float(oversample_factor)-ref_y1)
+        self.hive.put('/reference_position/x',np.arange(canvas_width,dtype=np.float)/float(oversample_factor)-ref_x1)
+
+        
+        ref_x1 = int(round(ref_x1*oversample_factor))
+        ref_x2 = int(round(ref_x2*oversample_factor))
+        ref_y1 = int(round(ref_y1*oversample_factor))
+        ref_y2 = int(round(ref_y2*oversample_factor))
+        reference = self.reference
+
+        sum_image = np.zeros((canvas_height,canvas_depth,canvas_width))
+        counter_image = np.zeros((canvas_height,canvas_depth,canvas_width))
+        correlation_image = np.zeros((canvas_height,canvas_depth,canvas_width))
+
+        for k in sorted(reg_dict.keys()):
+            xshifts,yshifts,goodnesses,indices = reg_dict[k]
+            temp = self.db.get(k)
+            filename = temp[0]
+            frame_index = int(temp[1])
+
+            flat_offsets0 = self.get_flat_offsets(filename,vidx)
+            model_profile,labels = self.get_model_and_labels(filename,vidx)
+            
+            flat_offsets = flat_offsets0.astype(np.integer)
+
+            im = np.abs(self.get_volume(filename,frame_index,'processed_data'))
+
+            flattened_im = np.zeros((n_slow,n_depth+flat_offsets.max(),n_fast))
+            for y in range(n_slow):
+                for x in range(n_fast):
+                    flattened_im[y,flat_offsets[y,x]:flat_offsets[y,x]+n_depth,x] = im[y,:,x]
+
+            # Let's crop flattened im to the ISOS +/- 50 px region described above
+            new_isos = 50
+            if labels['ISOS']>=new_isos:
+                z1 = labels['ISOS']-new_isos
+                z2 = z1+100
+                flattened_im = flattened_im[:,z1:z2,:]
+                old_cost = labels['COST']
+                old_rpe = labels['RPE']
+                new_cost = old_cost-z1
+                new_rpe = old_rpe-z1
+            else:
+                sys.exit('IS/OS too close to top of flattened volume. Fix this manually.')
+                
+            im = flattened_im
+            del flattened_im
+
+            this_image = np.zeros((canvas_height,canvas_depth,canvas_width))
+            this_counter = np.ones((canvas_height,canvas_depth,canvas_width))*np.finfo(float).eps
+            
+            for idx,xs,ys,g in zip(indices,xshifts,yshifts,goodnesses):
+                
+                #line = im[idx,left_crop:-right_crop]
+
+                line = im[idx,:,:]
+                if not left_crop is None:
+                    line = line[:,left_crop:]
+                
+                if not right_crop is None:
+                    line = line[:,:-right_crop]
+
+
+                line = np.expand_dims(line,0)
+                block = zoom(line,(oversample_factor,1,oversample_factor))
+                bsy,bsz,bsx = block.shape
+                if not left_crop is None:
+                    x1 = int(np.round((xs+left_crop)*oversample_factor))
+                else:
+                    x1 = int(np.round(xs*oversample_factor))
+                
+                x2 = x1 + bsx
+                y1 = int(np.round(ys*oversample_factor))
+                y2 = y1 + bsy
+
+                this_image[y1:y2,:,x1:x2] = this_image[y1:y2,:,x1:x2] + block
+                this_counter[y1:y2,:,x1:x2] = this_counter[y1:y2,:,x1:x2] + 1.0
+                sum_image[y1:y2,:,x1:x2] = sum_image[y1:y2,:,x1:x2] + block
+
+                counter_image[y1:y2,:,x1:x2] = counter_image[y1:y2,:,x1:x2] + 1.0
+
+            if do_plot:
+                temp = sum_image/counter_image
+                isos = temp[:,new_isos-1:new_isos+2,:].mean(1)
+                cost = temp[:,new_cost-1:new_cost+2,:].mean(1)
+                rpe = temp[:,new_rpe-1:new_rpe+2,:].mean(1)
+                plt.subplot(1,3,1)
+                plt.cla()
+                plt.imshow(isos,cmap='gray',aspect='auto')
+                plt.subplot(1,3,2)
+                plt.cla()
+                plt.imshow(cost,cmap='gray',aspect='auto')
+                plt.subplot(1,3,3)
+                plt.cla()
+                plt.imshow(rpe,cmap='gray',aspect='auto')
+                plt.pause(.1)
+                
+        temp = counter_image.copy()
+        temp[np.where(temp==0)] = 1.0
+        av = sum_image/temp
+        label = 'isos_aligned'
+        
+        self.hive.put('/correlation_volume/%s'%label,correlation_image)
+        self.hive.put('/counter_volume/%s'%label,counter_image)
+        self.hive.put('/average_volume/%s'%label,av)
+        self.hive.put('/sum_volume/%s'%label,sum_image)
+
+        print counter_image.shape
+        print sum_image.shape
+        print av.shape
         
 
 if __name__=='__main__':
