@@ -899,7 +899,10 @@ class Series:
         if not goodness_threshold is None:
             plt.axvline(goodness_threshold)
         plt.show()
+
+
     
+        
     def render(self,layer_names=None,goodness_threshold=0.0,correlation_threshold=-1.0,overwrite=False,oversample_factor=3,do_plot=False,make_movie=False,left_crop=0,right_crop=0):
 
         keys = self.hive['frames'].keys()
@@ -920,6 +923,8 @@ class Series:
         reg_dict = {}
 
         for k_idx,k in enumerate(keys):
+            if k[0]=='\\':
+                k = k[1:]
             filename,vidx = self.db.get(k)
 
             test,label = self.get_image(filename,0,layer_names)
@@ -1019,6 +1024,8 @@ class Series:
             ax3 = fig.add_axes([.6667,0,.3333,1])
         
         for k in sorted(reg_dict.keys()):
+            if k[0]=='\\':
+                k = k[1:]
             #if not k=='_home_rjonnal_data_Dropbox_Share_fdml_faooct_01_DataSet1_0100_000000_CONES':
             #    continue
             xshifts,yshifts,goodnesses,indices = reg_dict[k]
@@ -1385,10 +1392,23 @@ class Series:
 
 
         
-    def render_volume(self,goodness_threshold=0.0,overwrite=False,oversample_factor=3,do_plot=False,make_movie=False,left_crop=0,right_crop=0):
+    def render_volume(self,goodness_threshold=0.0,overwrite=False,oversample_factor=3,do_plot=False,make_movie=False,left_crop=0,right_crop=0,partial_count=30):
 
         keys = self.hive['frames'].keys()
         keys.sort()
+        ref_idx = self.hive['reference_index'][0]
+        ref_vol = self.hive['reference_volume'][0]
+        # find the reference key
+        for keycounter,k in enumerate(keys):
+            if k[0]=='\\':
+                k = k[1:]
+            filename,vidx = self.db.get(k)
+            test_idx = int(os.path.split(filename)[1])
+            test_vol = vidx
+            if ref_idx==test_idx and ref_vol==test_vol:
+                break
+                
+        keys = keys[keycounter:]+keys[:keycounter]
         
         sign = -1
         # remember the convention here: x and y shifts are the
@@ -1406,11 +1426,17 @@ class Series:
 
         reg_dict = {}
 
-        test_fn,vidx = self.db.get(keys[0])
+        test_key = keys[0]
+        if test_key[0]=='\\':
+            test_key = test_key[1:]
+
+        test_fn,vidx = self.db.get(test_key)
         avol = np.abs(self.get_volume(test_fn,vidx,'processed_data'))
         n_slow,n_depth,n_fast = avol.shape
         
         for k_idx,k in enumerate(keys):
+            if k[0]=='\\':
+                k = k[1:]
             filename,vidx = self.db.get(k)
 
             #avol = np.abs(self.get_volume(filename,vidx,'processed_data'))
@@ -1525,7 +1551,14 @@ class Series:
         counter_image = np.zeros((canvas_height,canvas_depth,canvas_width))
         correlation_image = np.zeros((canvas_height,canvas_depth,canvas_width))
 
-        for k in sorted(reg_dict.keys()):
+        
+        reg_dict_keys = reg_dict.keys()
+        reg_dict_keys.sort()
+        reg_dict_keys = reg_dict_keys[keycounter:]+reg_dict_keys[:keycounter]
+        
+        for key_index,k in enumerate(reg_dict_keys):
+            if k[0]=='\\':
+                k = k[1:]
             xshifts,yshifts,goodnesses,indices = reg_dict[k]
             temp = self.db.get(k)
             filename = temp[0]
@@ -1607,6 +1640,17 @@ class Series:
                 plt.cla()
                 plt.imshow(rpe,cmap='gray',aspect='auto')
                 plt.pause(.1)
+                
+            if key_index==partial_count:
+                temp = counter_image.copy()
+                temp[np.where(temp==0)] = 1.0
+                av = sum_image/temp
+                label = 'isos_aligned_partial'
+        
+                self.hive.put('/correlation_volume/%s'%label,correlation_image)
+                self.hive.put('/counter_volume/%s'%label,counter_image)
+                self.hive.put('/average_volume/%s'%label,av)
+                self.hive.put('/sum_volume/%s'%label,sum_image)
                 
         temp = counter_image.copy()
         temp[np.where(temp==0)] = 1.0
