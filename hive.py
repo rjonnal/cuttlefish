@@ -25,6 +25,8 @@ class Hive():
                 t = t[:-4]
             while t[0]=='/':
                 t = t[1:]
+            while t[0]=='\\':
+                t = t[1:]
             out.append(t)
         return out
         
@@ -75,5 +77,6 @@ class Hive():
             os.remove(fn)
         except Exception as e:
             pass
+        print fn
         np.save(fn,data)
         

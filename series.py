@@ -742,6 +742,8 @@ class Series:
         self.hive.put('/frames/%s/goodnesses'%self.key,g)
         self.hive.put('/frames/%s/reference'%self.key,[0])
         self.hive.put('/frames/%s/oversample_factor'%self.key,oversample_factor)
+
+        
         self.db.put(self.key,filename,vidx)
 
         
