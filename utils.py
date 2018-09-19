@@ -1084,6 +1084,214 @@ def strip_register(target,reference,oversample_factor,strip_width,do_plot=False,
     return y_peaks,x_peaks,goodnesses
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def rb_strip_register(target,reference,oversample_factor,strip_width,do_plot=False,rb_xmax=5,rb_ymax=5):
+
+    # this function returns the x and y shifts required to align lines in TARGET
+    # to REFERENCE, such that xshift -1 and yshift +2 for a given line means that
+    # it must be moved left one pixel and down two pixels to match REFERENCE
+    
+    if do_plot:
+        plt.figure(figsize=(24,12))
+
+    sy,sx = target.shape
+    sy2,sx2 = reference.shape
+    #ir_stack = np.zeros((sy,sy,sx))
+
+    assert sy==sy2 and sx==sx2
+
+    ref = reference
+    tar = target
+    
+    def show(im):
+        plt.figure()
+        plt.imshow(im,interpolation='none',cmap='gray')
+        plt.colorbar()
+
+    x_peaks = []
+    y_peaks = []
+    goodnesses = []
+
+    f1 = np.fft.fft2(ref)
+    f1c = f1.conjugate()
+
+
+    f2 = np.fft.fft2(tar)
+    rb_nxc = np.fft.fftshift(np.abs(np.fft.ifft2(f1c*f2)))
+    peaky,peakx = np.unravel_index(np.argmax(rb_nxc),rb_nxc.shape)
+    rb_yshift = peaky-sy//2
+    rb_xshift = peakx-sx//2
+
+    if False:
+        test_size = 50
+        ref_test = ref[:test_size,:test_size]
+        tar_test = tar[rb_yshift:rb_yshift+test_size,rb_xshift:rb_xshift+test_size]
+        plt.figure()
+        plt.imshow(ref_test)
+        plt.figure()
+        plt.imshow(tar_test)
+
+        plt.figure()
+        plt.imshow(ref_test-tar_test)
+
+        plt.figure()
+        plt.imshow(rb_nxc)
+        plt.show()
+
+        sys.exit()
+
+    
+    Ny = sy*oversample_factor
+    Nx = sx*oversample_factor
+
+    for iy in range(sy):
+
+        pct_done = round(float(iy)/float(sy)*100)
+        if pct_done%10==0:
+            print '%d percent done.'%pct_done
+
+
+
+        ref_y1 = iy-strip_width//2
+        ref_y2 = iy+strip_width//2
+
+        tar_y1 = ref_y1 + rb_yshift
+        tar_y2 = ref_y2 + rb_yshift
+
+        no_overlap = False
+        while ref_y1<0 or tar_y1<0:
+            ref_y1 += 1
+            tar_y1 += 1
+            if ref_y1>ref_y2:
+                no_overlap = True
+                break
+            if tar_y1>tar_y2:
+                no_overlap = True
+                break
+
+        while ref_y2>=sy or tar_y2>=sy:
+            ref_y2 -= 1
+            tar_y2 -= 1
+            if ref_y2<ref_y1:
+                no_overlap = True
+                break
+            if tar_y2<tar_y1:
+                no_overlap = True
+                break
+
+        if no_overlap:
+            x_peaks.append(np.nan)
+            y_peaks.append(np.nan)
+            goodnesses.append(np.nan)
+            continue
+
+        ref_strip = ref[ref_y1:ref_y2+1,:]
+        tar_strip = tar[tar_y1:tar_y2+1,:]
+
+        ref_strip = (ref_strip - ref_strip.mean())/ref_strip.std()
+        tar_strip = (tar_strip - tar_strip.mean())/tar_strip.std()
+        
+        ssy,ssx = ref_strip.shape
+        Ny,Nx = ssy*oversample_factor,ssx*oversample_factor
+
+
+        
+        rsf_conj = np.conj(np.fft.fft2(ref_strip))
+        tsf = np.fft.fft2(tar_strip)
+
+        nxc = np.fft.fftshift(np.abs(np.fft.ifft2(np.fft.fftshift(rsf_conj*tsf),s=(Ny,Nx))))
+
+        x1 = rb_xshift - rb_xmax + ssx//2
+        x2 = rb_xshift + rb_xmax+1 + ssx//2
+        x1 = x1*oversample_factor
+        x2 = x2*oversample_factor
+        nxc[:,:x1] = np.nan
+        nxc[:,x2:] = np.nan
+
+
+        if nxc.shape[0]>oversample_factor*(2*rb_ymax+1):
+            y1 = strip_width//2-rb_ymax
+            y2 = strip_width//2+rb_ymax+1
+            y1 = y1*oversample_factor
+            y2 = y2*oversample_factor
+            nxc[:y1,:] = np.nan
+            nxc[y2:,:] = np.nan
+            
+
+
+        if False:
+            plt.subplot(3,1,1)
+            plt.imshow(ref_strip,aspect='auto')
+            plt.subplot(3,1,2)
+            plt.imshow(tar_strip,aspect='auto')
+            plt.subplot(3,1,3)
+            plt.imshow(nxc,aspect='auto')
+            plt.colorbar()
+            plt.show()
+            continue
+
+
+        cpeaky,cpeakx = np.where(nxc==np.nanmax(nxc))
+        if not len(cpeaky):
+            peaky = np.nan
+            peakx = np.nan
+            goodness = np.nan
+        else:
+            goodness = np.nanmax(nxc)
+            cpeaky = float(cpeaky[0])
+            cpeakx = float(cpeakx[0])
+            peakx = cpeakx
+            peaky = cpeaky
+            peakx = peakx - Nx // 2
+            peaky = peaky - Ny // 2
+            peakx = peakx/oversample_factor
+            peaky = peaky/oversample_factor
+            peaky = peaky+rb_yshift
+            
+        y_peaks.append(peaky)
+        x_peaks.append(peakx)
+        goodnesses.append(goodness)
+            
+    return y_peaks,x_peaks,goodnesses
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=False,use_gaussian=True,background_diameter=0,refine=False):
 
     # this function returns the x and y shifts required to align lines in TARGET

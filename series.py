@@ -703,7 +703,7 @@ class Series:
 
         return out_vol,out_time
 
-    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0,refine=False,graph=False,left_crop=None,right_crop=None):
+    def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0,refine=False,graph=False,left_crop=None,right_crop=None,rb_prereg=False,rb_xmax=5,rb_ymax=5):
         
         print 'Adding %s, volume %d.'%(filename,vidx)
         
@@ -724,7 +724,6 @@ class Series:
         #self.db.put(self.key,filename,vidx)
 
         reference = self.reference
-
         if not left_crop is None:
             target = target[:,left_crop:]
             reference = reference[:,left_crop:]
@@ -732,8 +731,9 @@ class Series:
             target = target[:,:-right_crop]
             reference = reference[:,:-right_crop]
         
-        if graph:
-            y,x,g = utils.graph_strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter,refine=refine)
+        if rb_prereg:
+            y,x,g = utils.rb_strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,rb_xmax=rb_xmax,rb_ymax=rb_ymax)
+            
         else:
             y,x,g = utils.strip_register(target,reference,oversample_factor,strip_width,do_plot=do_plot,use_gaussian=use_gaussian,background_diameter=background_diameter,refine=refine)
 
@@ -897,7 +897,12 @@ class Series:
             goodnesses = list(np.load(gfn))
             all_goodnesses = all_goodnesses + goodnesses
 
-        plt.hist(all_goodnesses,500)
+        plt.plot(all_goodnesses)
+        plt.show()
+
+        temp = [ag for ag in all_goodnesses if not np.isnan(ag)]
+        
+        plt.hist(temp,500)
         if not goodness_threshold is None:
             plt.axvline(goodness_threshold)
         plt.show()
