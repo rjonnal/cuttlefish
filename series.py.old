@@ -640,11 +640,7 @@ class Series:
 
 
     def make_key(self,filename,volume_idx,layer_names):
-        if volume_idx is None:
-            temp = 0
-        else:
-            temp = volume_idx
-        return '%s_%06d_%s'%(filename.replace(os.sep,'_'),temp,'_'.join(layer_names))
+        return '%s_%06d_%s'%(filename.replace(os.sep,'_'),volume_idx,'_'.join(layer_names))
         
     
     def map_into_reference_space(self,filename,vidx,layer_names,goodness_threshold=-np.inf,oversample_factor=1.0,oversample_method='nearest'):
@@ -708,12 +704,9 @@ class Series:
         return out_vol,out_time
 
     def add(self,filename,vidx,key=None,layer_names=None,overwrite=True,oversample_factor=3,strip_width=3.0,do_plot=False,use_gaussian=False,background_diameter=0,refine=False,graph=False,left_crop=None,right_crop=None,rb_prereg=False,rb_xmax=5,rb_ymax=5):
-
-        try:
-            print 'Adding %s, volume %d.'%(filename,vidx)
-        except Exception as e:
-            print 'Adding %s.'%(filename)
-            
+        
+        print 'Adding %s, volume %d.'%(filename,vidx)
+        
         if key is None:
             self.key = self.make_key(filename,vidx,layer_names)
         else:
@@ -750,59 +743,33 @@ class Series:
         self.hive.put('/frames/%s/reference'%self.key,[0])
         self.hive.put('/frames/%s/oversample_factor'%self.key,oversample_factor)
 
-        if vidx is None:
-            temp = 0
-        else:
-            temp = vidx
-        self.db.put(self.key,filename,temp)
+        
+        self.db.put(self.key,filename,vidx)
 
+        
     def get_image(self,filename,vidx,layer_names):
+        
+        target_hive = Hive(filename)
+        if layer_names is None:
+            # if the layer_names list is missing, use the first layer as a default
+            # this seems like okay behavior since most times there's only one projection
+            # anyway
+            layer_names = [target_h5['projections'].keys()[0]]
 
-        if vidx is None:
-            target_hive = Hive(filename)
-            if layer_names is None:
-                # if the layer_names list is missing, use the first layer as a default
-                # this seems like okay behavior since most times there's only one projection
-                # anyway
-                layer_names = [target_h5['projections'].keys()[0]]
+        label = '_'.join(layer_names)
 
-            label = '_'.join(layer_names)
-
-            if len(layer_names)>1:
-                print target_hive['projections'][layer_names[0]][:,:]
-
-                test = target_hive['projections'][layer_names[0]][:,:]
-                n_slow,n_fast = test.shape
-                stack = np.zeros((len(layer_names),n_slow,n_fast))
-                for idx,layer_name in enumerate(layer_names):
-                    stack[idx,:,:] = target_hive['projections'][layer_name][:,:]
-                out = np.mean(stack,axis=0)
-                del stack
-            else:
-                out = target_hive['projections'][layer_names[0]][:,:]
-        else:
-            target_hive = Hive(filename)
-            if layer_names is None:
-                # if the layer_names list is missing, use the first layer as a default
-                # this seems like okay behavior since most times there's only one projection
-                # anyway
-                layer_names = [target_h5['projections'].keys()[0]]
-
-            label = '_'.join(layer_names)
-
-            if len(layer_names)>1:
-                print target_hive['projections'][layer_names[0]][vidx,:,:]
-
-                test = target_hive['projections'][layer_names[0]][vidx,:,:]
-                n_slow,n_fast = test.shape
-                stack = np.zeros((len(layer_names),n_slow,n_fast))
-                for idx,layer_name in enumerate(layer_names):
-                    stack[idx,:,:] = target_hive['projections'][layer_name][vidx,:,:]
-                out = np.mean(stack,axis=0)
-                del stack
-            else:
-                out = target_hive['projections'][layer_names[0]][vidx,:,:]
+        if len(layer_names)>1:
+            print target_hive['projections'][layer_names[0]][vidx,:,:]
             
+            test = target_hive['projections'][layer_names[0]][vidx,:,:]
+            n_slow,n_fast = test.shape
+            stack = np.zeros((len(layer_names),n_slow,n_fast))
+            for idx,layer_name in enumerate(layer_names):
+                stack[idx,:,:] = target_hive['projections'][layer_name][vidx,:,:]
+            out = np.mean(stack,axis=0)
+            del stack
+        else:
+            out = target_hive['projections'][layer_names[0]][vidx,:,:]    
         return out,label
 
     def get_image0(self,filename_stub,vidx,layer_names):
@@ -967,10 +934,7 @@ class Series:
                 k = k[1:]
             filename,vidx = self.db.get(k)
 
-            try:
-                test,label = self.get_image(filename,0,layer_names)
-            except Exception as e:
-                test,label = self.get_image(filename,None,layer_names)
+            test,label = self.get_image(filename,0,layer_names)
 
             n_slow,n_fast = test.shape
             goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
@@ -981,6 +945,7 @@ class Series:
             yshifts = np.squeeze(yshifts)
 
             xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses,goodness_threshold,xmax=3,ymax=3,do_plot=False)
+
             yshifts = yshifts + valid
             
 
@@ -1021,6 +986,7 @@ class Series:
         ref_x2 = ref_x1 + n_fast
         #ref_x2 = ref_x1 + n_fast - left_crop - right_crop
         ref_y2 = ref_y1 + n_slow
+
 
         self.hive.put('/reference_coordinates/x1',ref_x1)
         self.hive.put('/reference_coordinates/x2',ref_x2)
@@ -1063,32 +1029,24 @@ class Series:
             ax1 = fig.add_axes([0,0,.3333,1])
             ax2 = fig.add_axes([.3333,0,.3333,1])
             ax3 = fig.add_axes([.6667,0,.3333,1])
-
-
+        
         for k in sorted(reg_dict.keys()):
             if k[0]=='\\':
                 k = k[1:]
             #if not k=='_home_rjonnal_data_Dropbox_Share_fdml_faooct_01_DataSet1_0100_000000_CONES':
             #    continue
             xshifts,yshifts,goodnesses,indices = reg_dict[k]
-            try:
-                temp = self.db.get(k)
-                filename = temp[0]
-                frame_index = int(temp[1])
-                im,label = self.get_image(filename,frame_index,layer_names)
-            except Exception as e:
-                temp = self.db.get(k)
-                filename = temp[0]
-                frame_index = 0
-                im,label = self.get_image(filename,None,layer_names)
-                
+            temp = self.db.get(k)
+            filename = temp[0]
+            frame_index = int(temp[1])
+            im,label = self.get_image(filename,frame_index,layer_names)
             correlation_vector = np.zeros((n_slow))
             
             this_image = np.zeros((canvas_height,canvas_width))
             this_counter = np.ones((canvas_height,canvas_width))*np.finfo(float).eps
             
             for idx,xs,ys,g in zip(indices,xshifts,yshifts,goodnesses):
-                print idx
+                
                 #line = im[idx,left_crop:-right_crop]
 
                 line = im[idx,:]
@@ -1113,11 +1071,6 @@ class Series:
                 y1 = int(np.round(ys*oversample_factor))
                 y2 = y1 + bsy
 
-                if y2>ref_y2:
-                    print y2,ref_y2
-                    continue
-                    sys.exit('Error Sonic Youth.')
-                
                 #ref_section = embedded_reference[y1:y2,x1:x2]
 
                 #while block.shape[1]>ref_section.shape[1]:
@@ -1192,23 +1145,12 @@ class Series:
         if do_plot:
             plt.close()
 
-            clim = np.percentile(self.reference,(1,99.5))
-            plt.subplot(1,3,1)
-            plt.imshow(self.reference,cmap='gray',interpolation='none',clim=clim)
-            plt.title('reference image')
-            
-            plt.subplot(1,3,2)
-            plt.imshow(av,cmap='gray',interpolation='none',clim=clim)
-            plt.title('registered average (cropped to ref)')
-            plt.xlim((ref_x1,ref_x2))
-            plt.ylim((ref_y2,ref_y1))
-            
-            plt.subplot(1,3,3)
+            plt.subplot(1,2,1)
+            plt.imshow(av,cmap='gray',interpolation='none')
+
+            plt.subplot(1,2,2)
             plt.imshow(counter_image)
-            plt.title('number of contributing strips (cropped)')
             plt.colorbar()
-            plt.xlim((ref_x1,ref_x2))
-            plt.ylim((ref_y2,ref_y1))
 
             plt.show()
 
