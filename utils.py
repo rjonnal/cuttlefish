@@ -1109,8 +1109,8 @@ def rb_strip_register(target,reference,oversample_factor,strip_width,do_plot=Fal
     # it must be moved left one pixel and down two pixels to match REFERENCE
     
     if do_plot:
-        plt.figure(figsize=(24,12))
-
+        plt.figure()
+        
     sy,sx = target.shape
     sy2,sx2 = reference.shape
     #ir_stack = np.zeros((sy,sy,sx))
@@ -1135,6 +1135,16 @@ def rb_strip_register(target,reference,oversample_factor,strip_width,do_plot=Fal
 
     f2 = np.fft.fft2(tar)
     rb_nxc = np.fft.fftshift(np.abs(np.fft.ifft2(f1c*f2)))
+    plt.subplot(2,2,1)
+    plt.imshow(ref,cmap='gray')
+    plt.title('ref')
+    plt.subplot(2,2,2)
+    plt.imshow(tar,cmap='gray')
+    plt.title('tar')
+    plt.subplot(2,2,3)
+    plt.imshow(rb_nxc,cmap='gray')
+    plt.subplot(2,2,4)
+    
     peaky,peakx = np.unravel_index(np.argmax(rb_nxc),rb_nxc.shape)
     rb_yshift = peaky-sy//2
     rb_xshift = peakx-sx//2
@@ -1218,6 +1228,11 @@ def rb_strip_register(target,reference,oversample_factor,strip_width,do_plot=Fal
 
         nxc = np.fft.fftshift(np.abs(np.fft.ifft2(np.fft.fftshift(rsf_conj*tsf),s=(Ny,Nx))))
 
+        if do_plot:
+            plt.cla()
+            plt.imshow(nxc,aspect='auto')
+            plt.pause(.1)
+        
         x1 = rb_xshift - rb_xmax + ssx//2
         x2 = rb_xshift + rb_xmax+1 + ssx//2
         x1 = x1*oversample_factor

@@ -652,14 +652,8 @@ class Series:
         sign = -1
 
         target_hive = Hive(filename)
-
-        if vidx==None:
-            target_data = target_hive['processed_data'][:,:,:]
-            target_data_time = target_hive['data_time'][:,:]
-        else:
-            target_data = target_hive['processed_data'][vidx,:,:,:]
-            target_data_time = target_hive['data_time'][vidx,:,:]
-            
+        target_data = target_hive['processed_data'][vidx,:,:,:]
+        target_data_time = target_hive['data_time'][vidx,:,:]
         n_slow,n_depth,n_fast = target_data.shape
 
         goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
