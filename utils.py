@@ -465,8 +465,8 @@ def find_cones(data,neighborhood_size,nstd=0.0,do_plot=False):
         y.append(y_center+1)
 
     outcx,outcy = np.clip(np.array(x,dtype=np.float),0,xmax),np.clip(np.array(y,dtype=np.float),0,ymax)
-    outcx = outcx - 1
-    outcy = outcy - 1
+    #outcx = outcx - 1
+    #outcy = outcy - 1
     if do_plot:
         plt.figure()
         plt.imshow(data,cmap='gray',interpolation='none',clim=clim)
