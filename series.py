@@ -1191,9 +1191,12 @@ class Series:
         self.hive.put('/average_image/%s'%label,av)
         self.hive.put('/sum_image/%s'%label,sum_image)
 
-        print counter_image.shape
-        print sum_image.shape
-        print av.shape
+        plt.figure()
+        plt.imshow(counter_image)
+        plt.colorbar()
+        counter_outfn = '%s/counter_image/%s.png'%(self.hive.root_location,label)
+        plt.savefig(counter_outfn)
+        plt.close()
         
         if do_plot:
             plt.close()
