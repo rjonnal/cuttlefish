@@ -8,7 +8,7 @@ from scipy.ndimage import zoom
 from scipy.interpolate import griddata
 from scipy.signal import fftconvolve,medfilt
 from scipy.optimize import curve_fit
-from scipy.io import savemat
+from scipy.io import savemat,loadmat
 import matplotlib.colors as colors
 import matplotlib.cm as cmx
 from fig2gif import GIF
@@ -662,12 +662,12 @@ class Series:
             
         n_slow,n_depth,n_fast = target_data.shape
 
-        goodnesses = self.hive['/frames/%s/goodnesses'%k][:]
-        xshifts = sign*self.hive['/frames/%s/x_shifts'%k][:]
-        yshifts = sign*self.hive['/frames/%s/y_shifts'%k][:]
+        goodnesses = np.squeeze(self.hive['/frames/%s/goodnesses'%k][:])
+        xshifts = sign*np.squeeze(self.hive['/frames/%s/x_shifts'%k][:])
+        yshifts = sign*np.squeeze(self.hive['/frames/%s/y_shifts'%k][:])
 
-        ref_space_x = self.hive['reference_position/x'][:]
-        ref_space_y = self.hive['reference_position/y'][:]
+        ref_space_x = np.squeeze(self.hive['reference_position/x'][:])
+        ref_space_y = np.squeeze(self.hive['reference_position/y'][:])
         
         out_vol = np.nan*np.ones((len(ref_space_y),n_depth,len(ref_space_x)),dtype=np.complex64)
         max_goodness = np.ones((len(ref_space_y),len(ref_space_x)))*goodness_threshold
@@ -785,6 +785,8 @@ class Series:
                 out = np.mean(stack,axis=0)
                 del stack
             else:
+                #print target_hive['projections'].keys()
+                #print layer_names[0]
                 out = target_hive['projections'][layer_names[0]][:,:]
         else:
             target_hive = Hive(filename)
@@ -849,6 +851,10 @@ class Series:
         return counter
                 
     def get_volume(self,filename,vidx,data_block):
+        print filename
+        print vidx
+        print data_block
+        sys.exit()
         target_hive = Hive(filename)
         return target_hive[data_block][vidx,:,:,:]
 
@@ -931,9 +937,12 @@ class Series:
         keys = self.db.dictionary.keys()
         keys.sort()
         for k in keys:
-            gfn = os.path.join(os.path.join(os.path.join(self.series_directory,'frames'),k),'goodnesses.npy')
-            #filt_string = os.path.join(os.path.join(self.series_directory,'frames/%s/*'%k))
-            goodnesses = list(np.load(gfn))
+            try:
+                gfn = os.path.join(os.path.join(os.path.join(self.series_directory,'frames'),k),'goodnesses.npy')
+                goodnesses = list(np.load(gfn))
+            except Exception as e:
+                gfn = os.path.join(os.path.join(os.path.join(self.series_directory,'frames'),k),'goodnesses.mat')
+                goodnesses = list(loadmat(gfn)['goodnesses'].ravel())
             all_goodnesses = all_goodnesses + goodnesses
 
         plt.plot(all_goodnesses)
@@ -985,10 +994,10 @@ class Series:
 
             xshifts = np.squeeze(xshifts)
             yshifts = np.squeeze(yshifts)
-
+            goodnesses = np.squeeze(goodnesses)
+            
             xshifts,yshifts,goodnesses,valid = self.filter_registration(xshifts,yshifts,goodnesses,goodness_threshold,xmax=3,ymax=3,do_plot=False)
             yshifts = yshifts + valid
-            
 
             #try:
             #    print k,np.min(xshifts[use_for_limits]),np.max(xshifts[use_for_limits])
@@ -1017,7 +1026,6 @@ class Series:
 
             reg_dict[k] = (xshifts,yshifts,goodnesses,valid)
 
-            
         canvas_width = xmax-xmin+n_fast
         #canvas_width = xmax-xmin+n_fast-left_crop-right_crop
         canvas_height = ymax-ymin+10
