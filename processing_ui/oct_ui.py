@@ -2,7 +2,7 @@ import sys,os
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu, QVBoxLayout, QSizePolicy, QMessageBox, QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QSpinBox, QDoubleSpinBox,QLabel,QFileDialog,QCheckBox
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import pyqtSignal,QObject
+from PyQt5.QtCore import pyqtSignal,QObject,pyqtSlot,Qt
 # Make sure that we are using QT5
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -59,6 +59,8 @@ class OCTEngine(QObject):
 
     processed = pyqtSignal()
     projected = pyqtSignal()
+    start_waiting = pyqtSignal()
+    stop_waiting = pyqtSignal()
     
     def __init__(self):
         super(OCTEngine,self).__init__()
@@ -74,6 +76,7 @@ class OCTEngine(QObject):
         self.pz2 = ocfg.projection_z2_default
         
         self.cube = None
+        self.fcube = None
         self.hframe = None
         self.vframe = None
         self.dc_subtract = ocfg.dc_subtract_default
@@ -101,7 +104,6 @@ class OCTEngine(QObject):
             file_list = flist[:ocfg.default_images_per_volume]
 
         
-        
         self.file_list = file_list
         self.file_list.sort()
         self.sz = len(self.file_list)
@@ -115,7 +117,9 @@ class OCTEngine(QObject):
             print 'loading %s'%f
             self.cube[idx,:,:] = self.load_tif(f)
         if self.use_filtered:
+            self.start_waiting.emit()
             self.fcube = self.filter_volume(self.cube)
+            self.stop_waiting.emit()
         else:
             self.fcube = None
         self.has_data = True
@@ -126,8 +130,10 @@ class OCTEngine(QObject):
 
     def set_use_filtered(self,val):
         self.use_filtered = val
-        if val and self.fcube is None:
+        if val and self.fcube is None and self.cube is not None:
+            self.start_waiting.emit()
             self.fcube = self.filter_volume(self.cube)
+            self.stop_waiting.emit()
     
     def set_dc_sub(self,val):
         self.dc_subtract = val
@@ -258,6 +264,7 @@ class OCTEngine(QObject):
 
     def process_volume(self):
         if self.has_data:
+            self.start_waiting.emit()
             k_in = 2*np.pi/np.linspace(self.L1,self.L2,self.sz)
             k_out = np.linspace(k_in[0],k_in[-1],len(k_in))
             if self.use_filtered:
@@ -284,6 +291,7 @@ class OCTEngine(QObject):
             self.pvol = pvol[:pvol.shape[0]//2,:,:]
             self.projection = np.abs(self.pvol[self.pz1:self.pz2,:,:]).mean(0)
             bscan = np.abs(self.pvol[:-ocfg.dc_crop_pixels,self.sy//2-5:self.sy//2+5,:]).mean(1)
+            self.stop_waiting.emit()
             plt.figure()
             plt.subplot(1,2,1)
             plt.imshow(bscan,cmap='gray',clim=np.percentile(bscan,(20,99.9)))
@@ -325,6 +333,8 @@ class App(QWidget):
         self.oct_engine.load_files(flist)
         self.oct_engine.processed.connect(self.update_views)
         self.oct_engine.projected.connect(self.update_projection)
+        self.oct_engine.start_waiting.connect(self.start_waiting)
+        self.oct_engine.stop_waiting.connect(self.stop_waiting)
         
         self.left = 100
         self.top = 100
@@ -390,6 +400,16 @@ class App(QWidget):
         self.setLayout(self.main_layout)
         self.show()
 
+    @pyqtSlot()
+    def start_waiting(self):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        
+    @pyqtSlot()
+    def stop_waiting(self):
+        QApplication.restoreOverrideCursor()
+        QApplication.processEvents()
+        
     def load_files(self):
         dlg = QFileDialog()#self,'Choose TIF files','./2019.11.27')
         filter = '*%s'%ocfg.image_extension
