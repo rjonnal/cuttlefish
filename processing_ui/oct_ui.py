@@ -25,7 +25,7 @@ class Action(QPushButton):
         
 class Number(QWidget):
 
-    def __init__(self,label,default_value,slot_func,power=0.0,max_val=1e10,min_val=-1e10):
+    def __init__(self,label,default_value,slot_func,power=0.0,max_val=1e3,min_val=-1e3):
         super(Number,self).__init__()
         self.layout = QHBoxLayout()
         self.label = QLabel(label)
@@ -195,8 +195,16 @@ class OCTEngine(QObject):
 
     def process(self):
         if self.has_data:
+            # generate an array of k-values corresponding to the
+            # linearly spaced lambda values of the acquired stack;
+            # these k values are not linearly spaced
             k_in = 2*np.pi/np.linspace(self.L1,self.L2,self.sz)
+            
+            # generate linearly spaced k values between the first and
+            # last k values of k_in
             k_out = np.linspace(k_in[0],k_in[-1],len(k_in))
+            
+            # choose a volume to use based on the filter checkbox
             if self.use_filtered:
                 vol = self.fcube
             else:
@@ -204,24 +212,48 @@ class OCTEngine(QObject):
                 
             self.hframe = vol[:,:,self.hsi]
             self.vframe = vol[:,self.vsi,:]
+            
             for frame in [self.hframe,self.vframe]:
+            
+                
                 if self.dc_subtract:
+                    # estimate the DC by averaging
+                    # all the k-scans in the frame together;
+                    # we assume that decorrelation of intensity
+                    # and phase among the k-scans will cause
+                    # all of the fringes to be averaged out, such
+                    # that we're left with incoherent DC
                     dc = np.mean(frame,axis=1)
                     frame = (frame.T-dc).T
 
+                # interpolate image from nonlinear k (k_in) into linear k (k_out)
                 k_interpolator = spi.interp1d(k_in,frame,axis=0,copy=False)
                 processed_frame = k_interpolator(k_out)
 
+                # generate a set of k values to define the phase polynomial
                 dispersion_axis = k_out - np.mean(k_out)
+                # for 3rd order polynomial, polyval requires four numbers; put
+                # in zeros for linear and constant coefs:
                 dispersion_coefficients = [self.c3,self.c2,0.0,0.0]
+
+                # create phase polynomial to dechirp spectra:
                 phase = np.exp(1j*np.polyval(dispersion_coefficients,dispersion_axis))
+                
+                # multiply phase polynomial by fringe image
                 processed_frame = (processed_frame.T * phase).T
                 oversample_factor = 1
+                
+                # fft with respect to k and fftshift to bring DC to the center of the b-scan
                 processed_frame = np.fft.fftshift(np.fft.fft(processed_frame,n=processed_frame.shape[0]*oversample_factor,axis=0),axes=0)
                 n_depth = processed_frame.shape[0]
+                
+                # crop the complex conjugate:
                 processed_frame = processed_frame[:n_depth/2,:]
 
+                # crop out some DC as well
                 self.bscan = np.abs(processed_frame)[:-ocfg.dc_crop_pixels,:]
+                
+                # ignore
                 self.processed.emit()
 
     def process_volume(self):
