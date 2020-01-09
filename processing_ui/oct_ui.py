@@ -15,6 +15,7 @@ import oct_ui_config as ocfg
 import scipy.interpolate as spi
 import scipy.io as sio
 import glob
+import tifffile
 
 class Action(QPushButton):
     def __init__(self,label,func):
@@ -94,22 +95,22 @@ class OCTEngine(QObject):
         if not len(file_list):
             return
         if len(file_list)==1:
-            temp = file_list[0]
-            nfiles = 1
-            while nfiles<ocfg.default_images_per_volume:
-                temp = temp[:-1]
-                flist = glob.glob(temp+'*%s'%ocfg.image_extension)
-                nfiles = len(flist)
-            flist.sort()
-            file_list = flist[:ocfg.default_images_per_volume]
+            idx = int(os.path.splitext(file_list[0])[0][-6:])
+            assert idx%10==1
+            template = os.path.splitext(file_list[0])[0][:-6]
+            for k in range(1,ocfg.default_images_per_volume):
+                fn = '%s%06d%s'%(template,k+idx,ocfg.image_extension)
+                file_list.append(fn)
 
-        
+            file_list.sort()
+
         self.file_list = file_list
         self.file_list.sort()
         self.sz = len(self.file_list)
 
         # make a volume filename
         self.volume_filename = '%s_volume_%03d.mat'%(self.file_list[0].replace(ocfg.image_extension,''),self.sz)
+        self.projection_filename = '%s_projection.tif'%self.file_list[0].replace(ocfg.image_extension,'')
         
         self.sy,self.sx = self.load_tif(self.file_list[0]).shape
         self.cube = np.zeros((self.sz,self.sy,self.sx))
@@ -315,6 +316,9 @@ class OCTEngine(QObject):
             out_dict['projection'] = self.projection
             
             sio.savemat(self.volume_filename,out_dict)
+
+            bitmap = np.round(self.projection*ocfg.tiff_multiplier).astype(np.uint16)
+            tifffile.imwrite(self.projection_filename,bitmap)
             
             self.projected.emit()
                 
@@ -376,8 +380,8 @@ class App(QWidget):
         self.control_layout.addWidget(self.num_L1)
         self.control_layout.addWidget(self.num_L2)
 
-        self.num_pz1 = Number('projection z1',self.oct_engine.pz1,self.oct_engine.set_pz1,0)
-        self.num_pz2 = Number('projection z2',self.oct_engine.pz2,self.oct_engine.set_pz2,0)
+        self.num_pz1 = Number('projection z1',self.oct_engine.pz1,self.set_pz1,0)
+        self.num_pz2 = Number('projection z2',self.oct_engine.pz2,self.set_pz2,0)
         self.control_layout.addWidget(self.num_pz1)
         self.control_layout.addWidget(self.num_pz2)
         
@@ -399,6 +403,14 @@ class App(QWidget):
         self.main_layout.addLayout(self.control_layout)
         self.setLayout(self.main_layout)
         self.show()
+
+    def set_pz1(self,val):
+        self.oct_engine.set_pz1(val)
+        self.default_shear_offset = None
+
+    def set_pz2(self,val):
+        self.oct_engine.set_pz2(val)
+        self.default_shear_offset = None
 
     @pyqtSlot()
     def start_waiting(self):
@@ -429,10 +441,59 @@ class App(QWidget):
         self.oct_engine.load_files(files)
         self.update_views()
         
+    def shear(self,data,plims=(0,0),default_shear_offset=None):
+        def helper(data,k):
+            sy,sx = data.shape
+            subdat = np.zeros(data.shape)
+            for x in range(sx):
+                offset = int(round((x-(sx//2))*k))
+                get_z1 = offset
+                get_z2 = offset+sy
+                put_z1 = 0
+                put_z2 = sy
+                if get_z1<0:
+                    upper_crop = -get_z1
+                    get_z1 = get_z1 + upper_crop
+                    put_z1 = put_z1 + upper_crop
+                if get_z2>sy:
+                    lower_crop = -(sy-get_z2)
+                    get_z2 = get_z2 - lower_crop
+                    put_z2 = put_z2 - lower_crop
+
+                subdat[put_z1:put_z2,x] = data[get_z1:get_z2,x]
+            return subdat
+
+        if default_shear_offset is None:
+            sy,sx = data.shape
+            plims = list(plims)
+            if plims[0]<0:
+                plims[0] = 0
+            if plims[1]<0:
+                plims[1] = 1
+            if plims[0]>=sy:
+                plims[0]=sy-2
+            if plims[1]>=sy:
+                plims[1]=sy-1
+            offset_vec = np.linspace(-0.1,0.1,100)
+            profile_maxes = []
+            for offset in offset_vec:
+                profile_maxes.append(helper(data,offset)[plims[0]:plims[1],:].mean(1).max())
+            winning_offset = offset_vec[np.argmax(profile_maxes)]
+        else:
+            winning_offset = default_shear_offset
+        
+        return helper(data,winning_offset),winning_offset
+
     def update_views(self):
         bscan = self.oct_engine.bscan
-        ascan = bscan.mean(1)
         plim = (self.oct_engine.pz1,self.oct_engine.pz2)
+        if True:#self.correct_shear:
+            try:
+                bscan,junk = self.shear(bscan,plim,self.default_shear_offset)
+            except:
+                bscan,self.default_shear_offset = self.shear(bscan,plim)
+                
+        ascan = bscan.mean(1)
         self.ascan_view.plot(ascan,self.cb_log.isChecked(),plim)
         self.bscan_view.imshow(bscan,self.cb_log.isChecked(),plim)
 
@@ -459,9 +520,9 @@ class PlotCanvas(FigureCanvas):
             self.axes.semilogy(data, 'r-')
         else:
             self.axes.plot(data, 'r-')
-
         self.axes.axvline(plims[0])
         self.axes.axvline(plims[1])
+        self.axes.grid(True)
         self.draw()
 
 
