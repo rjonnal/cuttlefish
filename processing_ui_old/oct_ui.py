@@ -14,208 +14,8 @@ from PIL import Image
 import oct_ui_config as ocfg
 import scipy.interpolate as spi
 import scipy.io as sio
-import scipy.ndimage as spn
 import glob
 import tifffile
-
-class ProcessingInfo:
-    pass
-
-def process(vol_in,L1,L2,c3,c2,dc_subtract=False):
-    is_bscan = len(vol_in.shape)==2
-    if is_bscan:
-        vol = np.zeros((vol_in.shape[0],vol_in.shape[1],1))
-        vol[:,:,0] = vol_in
-    else:
-        vol = vol_in
-    
-    # generate an array of k-values corresponding to the
-    # linearly spaced lambda values of the acquired stack;
-    # these k values are not linearly spaced
-    k_in = 2*np.pi/np.linspace(L1,L2,vol.shape[0])
-    # generate linearly spaced k values between the first and
-    # last k values of k_in
-    k_out = np.linspace(k_in[0],k_in[-1],len(k_in))
-
-    if dc_subtract:
-        dc = vol.mean(2).mean(1)
-        vol = np.transpose(np.transpose(vol,[1,2,0])-dc,[2,0,1])
-    else:
-        dc = -1
-
-    sk,sy,sx = vol.shape
-    k_interpolator = spi.interp1d(k_in,vol,axis=0,copy=False)
-    pvol = k_interpolator(k_out)
-
-    dispersion_axis = k_out - np.mean(k_out)
-    dispersion_coefficients = [c3,c2,0.0,0.0]
-    oversample_factor = 1
-    phase = np.exp(1j*np.polyval(dispersion_coefficients,dispersion_axis))
-    pvol = (pvol.transpose([1,2,0])*phase).transpose([2,0,1])
-    pvol = np.fft.fftshift(np.fft.fft(pvol,n=pvol.shape[0]*oversample_factor,axis=0),axes=0)
-    if is_bscan:
-        pvol = pvol[:,:,0]
-
-    info = ProcessingInfo
-    info.k_in = k_in
-    info.k_out = k_out
-    info.phase = phase
-    info.dc = dc
-    return pvol,info
-
-
-def filter_volume(vol):
-    x0 = ocfg.offaxis_x0
-    x1 = ocfg.offaxis_x1
-    y0 = ocfg.offaxis_y0
-    y1 = ocfg.offaxis_y1
-    sigma = ocfg.offaxis_sigma
-
-    # 2D FFT each en face slice in the volume, multiply by a
-    # gaussian centered about one of the off-axis shifted images,
-    # and 2D FFT back
-
-    sk,sy0,sx0 = vol.shape
-
-    vol_square = np.zeros((sk,max(sx0,sy0),max(sx0,sy0)))
-    vol_square[:,:sy0,:sx0] = vol
-
-    sk,sy,sx = vol_square.shape
-
-    filt = np.zeros(vol_square.shape)
-    x_vec = np.linspace(x0,x1,sk)
-    y_vec = np.linspace(y0,y1,sk)
-    XX,YY = np.meshgrid(np.arange(sx),np.arange(sy))
-    for k in range(sk):
-        xx = XX-x_vec[k]
-        yy = YY-y_vec[k]
-        filt[k,:,:] = np.exp(-(xx**2+yy**2)/(2*sigma**2))
-        
-    fvol = np.fft.fft2(vol_square,axes=(1,2))
-    fvol = fvol*filt
-    vol = np.abs(np.fft.ifft2(fvol))
-    vol = vol[:,:sy0,:sx0]
-    return vol
-
-
-class DataSet:
-    def __init__(self,filename):
-
-        if filename.lower()[-4:]=='mraw':
-            self.mode = 'mraw'
-        elif filename.lower()[-3:]=='tif':
-            self.mode = 'tif'
-        else:
-            sys.exit('No action defined for files of type %s.'%(os.path.splitext(filename)[1]))
-        
-        if self.mode=='mraw':
-            self.sx = ocfg.n_width
-            self.sy = ocfg.n_height
-            self.dtype = ocfg.mraw_dtype
-            self.bytes_per_pixel = np.array([0],dtype=self.dtype).itemsize
-            n_bytes = os.stat(filename).st_size
-            n_frames = float(n_bytes)/(self.sx*self.sy*self.bytes_per_pixel)
-
-            try:
-                assert n_frames%1==0
-            except AssertionError as ae:
-                print ae
-                print 'n_frames calculated to be non-integer value %f; please check that the n_width and n_height parameters are correct in oct_ui_config.py'%n_frames
-                sys.exit()
-            self.n_frames = int(round(n_frames))
-            self.source = filename.replace('.mraw','')
-            
-        elif self.mode=='tif':
-            temp = self.load_tif(filename)
-            self.bytes_per_pixel = 2
-            self.sy,self.sx = temp.shape
-            self.dtype = np.uint16
-            self.source = os.path.split(filename)[0]
-            self.file_filter = os.path.join(self.source,'*.tif')
-            self.file_list = glob.glob(self.file_filter)
-            self.file_list.sort()
-            self.n_frames = len(self.file_list)
-            
-        self.output_directory = self.source+'_processed'
-        self.tiff_directory = self.source+'_projections'
-
-        self.sz = ocfg.default_images_per_volume
-        if self.n_frames<self.sz:
-            sys.exit('Not enough frames in %s.'%self.source)
-            
-        self.blank_threshold = ocfg.blank_threshold
-        self.filename = filename
-        self.bytes_per_frame = self.sx*self.sy*self.bytes_per_pixel
-        self.pixels_per_frame = self.sx*self.sy
-        
-        try:
-            os.mkdir(self.output_directory)
-        except Exception as e:
-            print e
-        try:
-            os.mkdir(self.tiff_directory)
-        except Exception as e:
-            print e
-
-        # read in all the frames and make a profile
-        profile = np.zeros(self.n_frames)
-        for k in range(self.n_frames):
-            profile[k] = self.load_frame(k).mean()
-
-        profile = np.array(profile)
-        profile[np.where(profile<=self.blank_threshold)] = 0
-        self.labels,n_features = spn.label(profile)
-
-        self.start_indices = []
-        self.end_indices = []
-        for k in range(1,n_features+1):
-            start = np.where(self.labels==k)[0][0]
-            end = start+self.sz
-            if end>self.n_frames:
-                break
-            else:
-                self.start_indices.append(start)
-                self.end_indices.append(end)
-
-        self.n_volumes = len(self.start_indices)
-        self.kstack = np.zeros((self.sz,self.sy,self.sx))
-        print '(start,end) indices for %d volumes:'%self.n_volumes
-        print zip(self.start_indices,self.end_indices)
-        self.profile = profile
-        self.load_kstack(0)
-        self.current_kstack = 0
-
-    def load_frame(self,idx):
-        if self.mode=='tif':
-            return self.load_tif(self.file_list[idx])
-        elif self.mode=='mraw':
-            offset = idx*self.bytes_per_frame
-            count = self.pixels_per_frame
-            with open(self.filename) as fid:
-                fid.seek(offset)
-                frame = np.fromfile(fid,self.dtype,count=count)
-            frame = np.reshape(frame,(self.sy,self.sx))
-            return frame
-            
-    def load_tif(self,fn):
-        return np.array(Image.open(fn),dtype=np.float)
-    
-    def load_kstack(self,idx):
-        start = self.start_indices[idx]
-        end = self.end_indices[idx]
-        for k in range(start,end):
-            self.kstack[k-start,:,:] = self.load_frame(k)
-        self.current_kstack = idx
-
-    def save(self,d):
-        out_fn = os.path.join(self.output_directory,'volume_%05d.mat'%self.current_kstack)
-        proj_fn = os.path.join(self.tiff_directory,'volume_%05d_projection.tif'%self.current_kstack)
-        
-        print 'saving to %s'%out_fn
-        sio.savemat(out_fn,d)
-        bitmap = np.round(d['projection']*ocfg.tiff_multiplier).astype(np.uint16)
-        tifffile.imwrite(proj_fn,bitmap)
-            
 
 class Action(QPushButton):
     def __init__(self,label,func):
@@ -273,13 +73,13 @@ class OCTEngine(QObject):
         self.c2 = ocfg.c2_default
         self.L1 = ocfg.L1_default
         self.L2 = ocfg.L2_default
-        self.pz1 = ocfg.projection_z1_default+ocfg.projection_z
-        self.pz2 = ocfg.projection_z2_default+ocfg.projection_z
+        self.pz1 = ocfg.projection_z1_default
+        self.pz2 = ocfg.projection_z2_default
         
         self.cube = None
         self.fcube = None
-        self.kscan = None
-        self.bscan = None
+        self.hframe = None
+        self.vframe = None
         self.dc_subtract = ocfg.dc_subtract_default
         self.vsi = 0
         self.hsi = 0
@@ -292,28 +92,49 @@ class OCTEngine(QObject):
         print self.n_images
 
     def load_files(self,file_list):
-        self.dataset = DataSet(file_list[0])
-        self.change_kstack()
+        if not len(file_list):
+            return
+        if len(file_list)==1:
+            idx = int(os.path.splitext(file_list[0])[0][-6:])
+            assert idx%10==1
+            template = os.path.splitext(file_list[0])[0][:-6]
+            for k in range(1,ocfg.default_images_per_volume):
+                fn = '%s%06d%s'%(template,k+idx,ocfg.image_extension)
+                file_list.append(fn)
 
-    def change_kstack(self):
-        self.cube = self.dataset.kstack
-        self.has_data = True
-        self.sz = self.dataset.sz
-        self.sy = self.dataset.sy
-        self.sx = self.dataset.sx
+            file_list.sort()
+
+        self.file_list = file_list
+        self.file_list.sort()
+        self.sz = len(self.file_list)
+
+        # make a volume filename
+        self.volume_filename = '%s_volume_%03d.mat'%(self.file_list[0].replace(ocfg.image_extension,''),self.sz)
+        self.projection_filename = '%s_projection.tif'%self.file_list[0].replace(ocfg.image_extension,'')
+        
+        self.sy,self.sx = self.load_tif(self.file_list[0]).shape
+        self.cube = np.zeros((self.sz,self.sy,self.sx))
+        for idx,f in enumerate(self.file_list):
+            print 'loading %s'%f
+            self.cube[idx,:,:] = self.load_tif(f)
         if self.use_filtered:
             self.start_waiting.emit()
-            self.fcube = filter_volume(self.cube)
+            self.fcube = self.filter_volume(self.cube)
             self.stop_waiting.emit()
+        else:
+            self.fcube = None
+        self.has_data = True
         self.process()
-        
+
+    def load_tif(self,fn):
+        return np.array(Image.open(fn),dtype=np.float)
+
     def set_use_filtered(self,val):
         self.use_filtered = val
         if val and self.fcube is None and self.cube is not None:
             self.start_waiting.emit()
-            self.fcube = filter_volume(self.cube)
+            self.fcube = self.filter_volume(self.cube)
             self.stop_waiting.emit()
-        self.process()
     
     def set_dc_sub(self,val):
         self.dc_subtract = val
@@ -352,86 +173,154 @@ class OCTEngine(QObject):
         self.pz2 = val
         self.processed.emit()
         
+    def filter_volume(self,vol):
+        x0 = ocfg.offaxis_x0
+        y0 = ocfg.offaxis_y0
+        sigma = ocfg.offaxis_sigma
+        
+        # 2D FFT each en face slice in the volume, multiply by a
+        # gaussian centered about one of the off-axis shifted images,
+        # and 2D FFT back
+
+        sk,sy0,sx0 = vol.shape
+
+        vol_square = np.zeros((sk,max(sx0,sy0),max(sx0,sy0)))
+        vol_square[:,:sy0,:sx0] = vol
+
+        sk,sy,sx = vol_square.shape
+
+        xx,yy = np.meshgrid(np.arange(sx),np.arange(sy))
+        xx = xx-x0
+        yy = yy-y0
+        g = np.exp(-(xx**2+yy**2)/(2*sigma**2))
+        fvol = np.fft.fft2(vol_square,axes=(1,2))
+
+        fvol = fvol*g
+        vol = np.abs(np.fft.ifft2(fvol))
+        vol = vol[:,:sy0,:sx0]
+        return vol
 
     def process(self):
         if self.has_data:
+            # generate an array of k-values corresponding to the
+            # linearly spaced lambda values of the acquired stack;
+            # these k values are not linearly spaced
+            k_in = 2*np.pi/np.linspace(self.L1,self.L2,self.sz)
+            
+            # generate linearly spaced k values between the first and
+            # last k values of k_in
+            k_out = np.linspace(k_in[0],k_in[-1],len(k_in))
+            
             # choose a volume to use based on the filter checkbox
             if self.use_filtered:
                 vol = self.fcube
             else:
                 vol = self.cube
                 
-            self.kscan = vol[:,self.vsi,:]
-            processed_frame,info = process(self.kscan,self.L1,self.L2,self.c3,self.c2,self.dc_subtract)
-            n_depth = processed_frame.shape[0]
+            self.hframe = vol[:,:,self.hsi]
+            self.vframe = vol[:,self.vsi,:]
             
-            # crop the complex conjugate:
-            processed_frame = processed_frame[:n_depth/2,:]
-
-            # crop out some DC as well
-            self.bscan = np.abs(processed_frame)[:-ocfg.dc_crop_pixels,:]
-
-
-            p = self.bscan.mean(1)
-            rows_to_use = np.argsort(p)[:len(p)//3]
-            noise_region = self.bscan[rows_to_use,:]
+            for frame in [self.hframe,self.vframe]:
             
-            temp = self.bscan.ravel()
-            temp = list(temp)
-            temp.sort()
-            
-            self.snr1 = 20*np.log10(np.max(temp)/np.std(temp[:len(temp)//4]))
-            self.snr2 = 20*np.log10(np.max(temp)/noise_region.std())
-            # ignore
-            self.processed.emit()
+                
+                if self.dc_subtract:
+                    # estimate the DC by averaging
+                    # all the k-scans in the frame together;
+                    # we assume that decorrelation of intensity
+                    # and phase among the k-scans will cause
+                    # all of the fringes to be averaged out, such
+                    # that we're left with incoherent DC
+                    dc = np.mean(frame,axis=1)
+                    frame = (frame.T-dc).T
+
+                # interpolate image from nonlinear k (k_in) into linear k (k_out)
+                k_interpolator = spi.interp1d(k_in,frame,axis=0,copy=False)
+                processed_frame = k_interpolator(k_out)
+
+                # generate a set of k values to define the phase polynomial
+                dispersion_axis = k_out - np.mean(k_out)
+                # for 3rd order polynomial, polyval requires four numbers; put
+                # in zeros for linear and constant coefs:
+                dispersion_coefficients = [self.c3,self.c2,0.0,0.0]
+
+                # create phase polynomial to dechirp spectra:
+                phase = np.exp(1j*np.polyval(dispersion_coefficients,dispersion_axis))
+                
+                # multiply phase polynomial by fringe image
+                processed_frame = (processed_frame.T * phase).T
+                oversample_factor = 1
+                
+                # fft with respect to k and fftshift to bring DC to the center of the b-scan
+                processed_frame = np.fft.fftshift(np.fft.fft(processed_frame,n=processed_frame.shape[0]*oversample_factor,axis=0),axes=0)
+                n_depth = processed_frame.shape[0]
+                
+                # crop the complex conjugate:
+                processed_frame = processed_frame[:n_depth/2,:]
+
+                # crop out some DC as well
+                self.bscan = np.abs(processed_frame)[:-ocfg.dc_crop_pixels,:]
+                
+                # ignore
+                self.processed.emit()
 
     def process_volume(self):
         if self.has_data:
             self.start_waiting.emit()
-
-            
+            k_in = 2*np.pi/np.linspace(self.L1,self.L2,self.sz)
+            k_out = np.linspace(k_in[0],k_in[-1],len(k_in))
             if self.use_filtered:
                 vol = self.fcube
             else:
                 vol = self.cube
+                
+            if self.dc_subtract:
+                dc = vol.mean(2).mean(1)
+                vol = np.transpose(np.transpose(vol,[1,2,0])-dc,[2,0,1])
+            else:
+                dc = -1
+            
+            sk,sy,sx = vol.shape
+            k_interpolator = spi.interp1d(k_in,vol,axis=0,copy=False)
+            pvol = k_interpolator(k_out)
 
-            pvol,info = process(vol,self.L1,self.L2,self.c3,self.c2,dc_subtract=self.dc_subtract)
+            dispersion_axis = k_out - np.mean(k_out)
+            dispersion_coefficients = [self.c3,self.c2,0.0,0.0]
+            oversample_factor = 1
+            phase = np.exp(1j*np.polyval(dispersion_coefficients,dispersion_axis))
+            pvol = (pvol.transpose([1,2,0])*phase).transpose([2,0,1])
+            pvol = np.fft.fftshift(np.fft.fft(pvol,n=pvol.shape[0]*oversample_factor,axis=0),axes=0)
             self.pvol = pvol[:pvol.shape[0]//2,:,:]
             self.projection = np.abs(self.pvol[self.pz1:self.pz2,:,:]).mean(0)
-            self.bscan = np.abs(self.pvol[:-ocfg.dc_crop_pixels,self.sy//2-5:self.sy//2+5,:]).mean(1)
+            bscan = np.abs(self.pvol[:-ocfg.dc_crop_pixels,self.sy//2-5:self.sy//2+5,:]).mean(1)
             self.stop_waiting.emit()
+            plt.figure()
+            plt.subplot(1,2,1)
+            plt.imshow(bscan,cmap='gray',clim=np.percentile(bscan,(20,99.9)))
+            plt.axhline(self.pz1)
+            plt.axhline(self.pz2)
+            plt.subplot(1,2,2)
+            plt.imshow(self.projection,cmap='gray')
+            plt.pause(.1)
 
-    def process_all_volumes(self):
-        for k in range(self.dataset.n_volumes):
-            self.start_waiting.emit()
-            self.dataset.load_kstack(k)
-            self.change_kstack()
-            if self.use_filtered:
-                vol = self.fcube
-            else:
-                vol = self.cube
-            pvol,info = process(vol,self.L1,self.L2,self.c3,self.c2,dc_subtract=self.dc_subtract)
-            self.pvol = pvol[:pvol.shape[0]//2,:,:]
-            self.projection = np.abs(self.pvol[self.pz1:self.pz2,:,:]).mean(0)
-            self.bscan = np.abs(self.pvol[:-ocfg.dc_crop_pixels,self.sy//2-5:self.sy//2+5,:]).mean(1)
-            
             out_dict = {}
             out_dict['c3'] = self.c3
             out_dict['c2'] = self.c2
-            out_dict['k_in'] = info.k_in
-            out_dict['k_out'] = info.k_out
-            out_dict['dispersion_phasor'] = info.phase
-            out_dict['dc'] = info.dc
+            out_dict['k_in'] = k_in
+            out_dict['k_out'] = k_out
+            out_dict['dispersion_phasor'] = phase
+            out_dict['dc'] = dc
             out_dict['offaxis_filtered'] = self.use_filtered
             out_dict['volume'] = self.pvol
             out_dict['projection_z1'] = self.pz1
             out_dict['projection_z2'] = self.pz2
             out_dict['projection'] = self.projection
-            self.dataset.save(out_dict)
-            self.stop_waiting.emit()
-            self.projected.emit()
-            self.processed.emit()
             
+            sio.savemat(self.volume_filename,out_dict)
+
+            bitmap = np.round(self.projection*ocfg.tiff_multiplier).astype(np.uint16)
+            tifffile.imwrite(self.projection_filename,bitmap)
+            
+            self.projected.emit()
                 
         
 class App(QWidget):
@@ -446,7 +335,6 @@ class App(QWidget):
         
         self.oct_engine = OCTEngine()
         self.oct_engine.load_files(flist)
-        self.n_volumes = self.oct_engine.dataset.n_volumes
         self.oct_engine.processed.connect(self.update_views)
         self.oct_engine.projected.connect(self.update_projection)
         self.oct_engine.start_waiting.connect(self.start_waiting)
@@ -477,18 +365,10 @@ class App(QWidget):
         # controls
         self.act_quit = Action('&Quit',sys.exit)
         self.act_load = Action('&Load',self.load_files)
-
-        self.num_volume_index = Number('Volume index',0,self.set_volume_index,max_val=self.n_volumes-1,min_val=0)
-
         self.act_project = Action('Project volume',self.oct_engine.process_volume)
-        self.act_process_all = Action('Process all volumes',self.oct_engine.process_all_volumes)
-
-        
         self.control_layout.addWidget(self.act_quit)
         self.control_layout.addWidget(self.act_load)
-        self.control_layout.addWidget(self.num_volume_index)
         self.control_layout.addWidget(self.act_project)
-        self.control_layout.addWidget(self.act_process_all)
 
         self.num_c3 = Number('c3',self.oct_engine.c3,self.oct_engine.set_c3,ocfg.c3_power)
         self.num_c2 = Number('c2',self.oct_engine.c2,self.oct_engine.set_c2,ocfg.c2_power)
@@ -520,20 +400,10 @@ class App(QWidget):
         self.cb_log.stateChanged.connect(self.update_views)
         self.control_layout.addWidget(self.cb_log)
         
-        self.ind_snr1 = Indicator('SNR1',fmt='%s = %0.2f dB')
-        self.ind_snr2 = Indicator('SNR2',fmt='%s = %0.2f dB')
-        self.control_layout.addWidget(self.ind_snr1)
-        self.control_layout.addWidget(self.ind_snr2)
-
         self.main_layout.addLayout(self.control_layout)
         self.setLayout(self.main_layout)
         self.show()
-        self.update_views()
 
-    def set_volume_index(self,val):
-        self.oct_engine.dataset.load_kstack(int(val))
-        self.oct_engine.change_kstack()
-        
     def set_pz1(self,val):
         self.oct_engine.set_pz1(val)
         self.default_shear_offset = None
@@ -571,29 +441,64 @@ class App(QWidget):
         self.oct_engine.load_files(files)
         self.update_views()
         
+    def shear(self,data,plims=(0,0),default_shear_offset=None):
+        def helper(data,k):
+            sy,sx = data.shape
+            subdat = np.zeros(data.shape)
+            for x in range(sx):
+                offset = int(round((x-(sx//2))*k))
+                get_z1 = offset
+                get_z2 = offset+sy
+                put_z1 = 0
+                put_z2 = sy
+                if get_z1<0:
+                    upper_crop = -get_z1
+                    get_z1 = get_z1 + upper_crop
+                    put_z1 = put_z1 + upper_crop
+                if get_z2>sy:
+                    lower_crop = -(sy-get_z2)
+                    get_z2 = get_z2 - lower_crop
+                    put_z2 = put_z2 - lower_crop
+
+                subdat[put_z1:put_z2,x] = data[get_z1:get_z2,x]
+            return subdat
+
+        if default_shear_offset is None:
+            sy,sx = data.shape
+            plims = list(plims)
+            if plims[0]<0:
+                plims[0] = 0
+            if plims[1]<0:
+                plims[1] = 1
+            if plims[0]>=sy:
+                plims[0]=sy-2
+            if plims[1]>=sy:
+                plims[1]=sy-1
+            offset_vec = np.linspace(-0.1,0.1,100)
+            profile_maxes = []
+            for offset in offset_vec:
+                profile_maxes.append(helper(data,offset)[plims[0]:plims[1],:].mean(1).max())
+            winning_offset = offset_vec[np.argmax(profile_maxes)]
+        else:
+            winning_offset = default_shear_offset
+        
+        return helper(data,winning_offset),winning_offset
+
     def update_views(self):
         bscan = self.oct_engine.bscan
         plim = (self.oct_engine.pz1,self.oct_engine.pz2)
+        if True:#self.correct_shear:
+            try:
+                bscan,junk = self.shear(bscan,plim,self.default_shear_offset)
+            except:
+                bscan,self.default_shear_offset = self.shear(bscan,plim)
+                
         ascan = bscan.mean(1)
         self.ascan_view.plot(ascan,self.cb_log.isChecked(),plim)
         self.bscan_view.imshow(bscan,self.cb_log.isChecked(),plim)
-        self.ind_snr1.set(self.oct_engine.snr1)
-        self.ind_snr2.set(self.oct_engine.snr2)
-        
+
     def update_projection(self):
         self.projection_view.imshow(self.oct_engine.projection,self.cb_log.isChecked(),aspect=None)
-
-
-class Indicator(QLabel):
-
-    def __init__(self,name,default_value=0.0,fmt='%s = %0.2f'):
-        self.name = name
-        self.fmt = fmt
-        super(Indicator,self).__init__(self.fmt%(self.name,default_value))
-
-    def set(self,val):
-        self.setText(self.fmt%(self.name,val))
-        
         
 class PlotCanvas(FigureCanvas):
 
@@ -635,15 +540,15 @@ class ImageCanvas(FigureCanvas):
                 QSizePolicy.Expanding)
         FigureCanvas.updateGeometry(self)
 
-    def imshow(self,data,log=False,plims=(0,0),aspect='auto',border=5):
+    def imshow(self,data,log=False,plims=(0,0),aspect='auto'):
         self.axes.clear()
         if log:
             im = np.log(data)
-            clim = np.percentile(im[border:-border,border:-border],ocfg.bscan_log_contrast_percentile)
+            clim = np.percentile(im,ocfg.bscan_log_contrast_percentile)
             self.axes.imshow(im,cmap='gray',aspect=aspect,clim=clim)
         else:
             clim = np.percentile(data,ocfg.bscan_linear_contrast_percentile)
-            self.axes.imshow(data[border:-border,border:-border],cmap='gray',aspect=aspect,clim=clim)
+            self.axes.imshow(data,cmap='gray',aspect=aspect,clim=clim)
         self.axes.axhline(plims[0])
         self.axes.axhline(plims[1])
         self.draw()

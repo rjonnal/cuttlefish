@@ -1,25 +1,12 @@
-import numpy as np
-
-# mraw settings
-n_width = 384
-n_height = 240
-mraw_dtype = np.uint16
-# if the average intensity in a frame is below this
-# threshold, consider it the end of a sweep
-blank_threshold = 100
-# index of the single k-stack to use for visualization
-default_stack_index = 2
-
-
-#n_frames = 20501 don't specify this; deduce it instead
-
 c3_max = 1e-15
 c3_min = -1e-15
 c2_max = 1e-8
 c2_min = -1e-8
 
-c3_default = 23.0e-17
-c2_default = 14.8e-11
+c3_default = -9e-17
+
+#c2_default = 13e-11 # worked for some of the 2019.11.27 2.0T data
+c2_default = -48e-11
 
 c3_power = -16
 c2_power = -11
@@ -34,9 +21,8 @@ dc_crop_pixels = 50
 bscan_linear_contrast_percentile = (5,99.5)
 bscan_log_contrast_percentile = (50,99.5)
 
-projection_z = 165
-projection_z1_default = -10
-projection_z2_default = 10
+projection_z1_default = 134
+projection_z2_default = 143
 
 # When generating a TIFF, we have to decide how to
 # discretize the floating point values in an OCT volume.
@@ -54,14 +40,11 @@ tiff_multiplier = 1.0
 # offaxis_sigma
 offaxis_x0 = 283.5
 offaxis_y0 = 101.5
-offaxis_x1 = 284.5
-offaxis_y1 = 100.5
-
 offaxis_sigma = 167.0/3
 
 dc_subtract_default = True
 filter_volume_default = False
 log_scale_default = False
-image_extension = '.*'
+image_extension = '.tif'
 default_images_per_volume = 500
 default_data_directory = '/home/rjonnal/Share/aossfoct/2019.11.27'
