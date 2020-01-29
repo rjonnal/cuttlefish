@@ -160,6 +160,9 @@ class DataSet:
         # read in all the frames and make a profile
         profile = np.zeros(self.n_frames)
         for k in range(self.n_frames):
+            if k%1000==0:
+                print 'loading frame %d of %d'%(k+1,self.n_frames)
+            temp = self.load_frame(k)
             profile[k] = self.load_frame(k).mean()
 
         profile = np.array(profile)
@@ -169,6 +172,7 @@ class DataSet:
         self.start_indices = []
         self.end_indices = []
         for k in range(1,n_features+1):
+            
             start = np.where(self.labels==k)[0][0]
             end = start+self.sz
             if end>self.n_frames:
@@ -176,7 +180,7 @@ class DataSet:
             else:
                 self.start_indices.append(start)
                 self.end_indices.append(end)
-
+            
         self.n_volumes = len(self.start_indices)
         self.kstack = np.zeros((self.sz,self.sy,self.sx))
         print '(start,end) indices for %d volumes:'%self.n_volumes
@@ -186,12 +190,13 @@ class DataSet:
         self.current_kstack = 0
 
     def load_frame(self,idx):
+        #print 'loading frame %d'%idx
         if self.mode=='tif':
             return self.load_tif(self.file_list[idx])
         elif self.mode=='mraw':
             offset = idx*self.bytes_per_frame
             count = self.pixels_per_frame
-            with open(self.filename) as fid:
+            with open(self.filename,'rb') as fid:
                 fid.seek(offset)
                 frame = np.fromfile(fid,self.dtype,count=count)
             frame = np.reshape(frame,(self.sy,self.sx))
@@ -210,6 +215,8 @@ class DataSet:
     def save(self,d):
         out_fn = os.path.join(self.output_directory,'volume_%05d.mat'%self.current_kstack)
         proj_fn = os.path.join(self.tiff_directory,'volume_%05d_projection.tif'%self.current_kstack)
+        d['starting_frame'] = self.start_indices[self.current_kstack]
+        d['ending_frame'] = self.end_indices[self.current_kstack]
         
         print 'saving to %s'%out_fn
         sio.savemat(out_fn,d)
@@ -256,6 +263,9 @@ class Number(QWidget):
         self.func(self.value)
         print 'Setting %s to %e.'%(self.label.text(),self.value)
         
+    def set_maximum(self,val):
+        self.box.setMaximum(val)
+        
 class OCTEngine(QObject):
 
     processed = pyqtSignal()
@@ -292,9 +302,12 @@ class OCTEngine(QObject):
         print self.n_images
 
     def load_files(self,file_list):
+        if len(file_list)==0:
+            return
         self.dataset = DataSet(file_list[0])
         self.change_kstack()
-
+        
+            
     def change_kstack(self):
         self.cube = self.dataset.kstack
         self.has_data = True
@@ -387,29 +400,14 @@ class OCTEngine(QObject):
 
     def process_volume(self):
         if self.has_data:
-            self.start_waiting.emit()
-
             
             if self.use_filtered:
                 vol = self.fcube
             else:
                 vol = self.cube
-
-            pvol,info = process(vol,self.L1,self.L2,self.c3,self.c2,dc_subtract=self.dc_subtract)
-            self.pvol = pvol[:pvol.shape[0]//2,:,:]
-            self.projection = np.abs(self.pvol[self.pz1:self.pz2,:,:]).mean(0)
-            self.bscan = np.abs(self.pvol[:-ocfg.dc_crop_pixels,self.sy//2-5:self.sy//2+5,:]).mean(1)
-            self.stop_waiting.emit()
-
-    def process_all_volumes(self):
-        for k in range(self.dataset.n_volumes):
+                
             self.start_waiting.emit()
-            self.dataset.load_kstack(k)
-            self.change_kstack()
-            if self.use_filtered:
-                vol = self.fcube
-            else:
-                vol = self.cube
+
             pvol,info = process(vol,self.L1,self.L2,self.c3,self.c2,dc_subtract=self.dc_subtract)
             self.pvol = pvol[:pvol.shape[0]//2,:,:]
             self.projection = np.abs(self.pvol[self.pz1:self.pz2,:,:]).mean(0)
@@ -428,10 +426,16 @@ class OCTEngine(QObject):
             out_dict['projection_z2'] = self.pz2
             out_dict['projection'] = self.projection
             self.dataset.save(out_dict)
-            self.stop_waiting.emit()
-            self.projected.emit()
-            self.processed.emit()
             
+            self.stop_waiting.emit()
+            self.processed.emit()
+            self.projected.emit()
+
+    def process_all_volumes(self):
+        for k in range(self.dataset.n_volumes):
+            self.dataset.load_kstack(k)
+            self.change_kstack()
+            self.process_volume()
                 
         
 class App(QWidget):
@@ -446,7 +450,7 @@ class App(QWidget):
         
         self.oct_engine = OCTEngine()
         self.oct_engine.load_files(flist)
-        self.n_volumes = self.oct_engine.dataset.n_volumes
+            
         self.oct_engine.processed.connect(self.update_views)
         self.oct_engine.projected.connect(self.update_projection)
         self.oct_engine.start_waiting.connect(self.start_waiting)
@@ -478,7 +482,9 @@ class App(QWidget):
         self.act_quit = Action('&Quit',sys.exit)
         self.act_load = Action('&Load',self.load_files)
 
-        self.num_volume_index = Number('Volume index',0,self.set_volume_index,max_val=self.n_volumes-1,min_val=0)
+        self.num_volume_index = Number('Volume index',0,self.set_volume_index,max_val=0,min_val=0)
+        if self.oct_engine.has_data:
+            self.num_volume_index.set_maximum(self.oct_engine.dataset.n_volumes-1)
 
         self.act_project = Action('Project volume',self.oct_engine.process_volume)
         self.act_process_all = Action('Process all volumes',self.oct_engine.process_all_volumes)
@@ -528,7 +534,8 @@ class App(QWidget):
         self.main_layout.addLayout(self.control_layout)
         self.setLayout(self.main_layout)
         self.show()
-        self.update_views()
+        if self.oct_engine.has_data:
+            self.update_views()
 
     def set_volume_index(self,val):
         self.oct_engine.dataset.load_kstack(int(val))
@@ -569,6 +576,7 @@ class App(QWidget):
                 fid.write(d)
             
         self.oct_engine.load_files(files)
+        self.num_volume_index.set_maximum(self.oct_engine.dataset.n_volumes-1)
         self.update_views()
         
     def update_views(self):
